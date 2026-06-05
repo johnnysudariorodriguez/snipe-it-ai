@@ -1,0 +1,49 @@
+# Snipe-IT with floating AI assistant (custom build from this directory).
+#
+# Prereq: copy your real env.docker here (or change env_file path). Add:
+#   OPENAI_API_KEY=sk-...
+#   OPENAI_MODEL=gpt-4o-mini
+#
+# Build and run:
+#   docker compose -f docker-compose.snipe-ai.yml build app
+#   docker compose -f docker-compose.snipe-ai.yml up -d
+#
+# Host port: default 8001 if 8000 is already taken (set APP_PORT in a .env next to this file).
+# Keep APP_URL in env.docker in sync (e.g. http://localhost:8001).
+#
+# Data volumes match the official stack: db_data + storage.
+
+volumes:
+  db_data:
+  storage:
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: snipe-it-ai:8.4.0
+    restart: unless-stopped
+    volumes:
+      - storage:/var/lib/snipeit
+    ports:
+      - "${APP_PORT:-8001}:80"
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
+    env_file:
+      - env.docker
+
+  db:
+    image: mariadb:11.4.7
+    restart: unless-stopped
+    env_file:
+      - env.docker
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 1s
+      retries: 5
