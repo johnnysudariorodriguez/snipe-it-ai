@@ -1909,7 +1909,7 @@
         <script src="{{ url('js/select2/i18n/'.Helper::mapBackToLegacyLocale(app()->getLocale()).'.js') }}"></script>
 
         {{-- Page level javascript --}}
-        @include('partials.ai_chat_widget')
+        @include('ai-chat.ai_chat_widget')
         @stack('js')
 
         @section('moar_scripts')
