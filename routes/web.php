@@ -40,6 +40,16 @@ Route::group(['middleware' => 'auth'], function () {
         ->middleware('throttle:ai-chat')
         ->name('ai-chat.message');
 
+    // AI Assistant UI (admin-facing)
+    Route::get('ai-assistant', function () {
+        return view('ai-chat.ai-assistant');
+    })->name('ai-assistant.index');
+
+    // Placeholder: files list for frontend empty state (backend implementation expected)
+    Route::get('ai-assistant/files', function () {
+        return response()->json([]);
+    })->name('ai-assistant.files');
+
     /*
     * Companies
     */

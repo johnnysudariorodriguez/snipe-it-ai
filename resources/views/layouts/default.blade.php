@@ -1515,6 +1515,25 @@
                                     </ul>
                                 </li>
                         @endcan
+
+                        @can('backend.interact')
+                            <li class="treeview {{ (request()->is('ai-assistant*') ? ' active' : '') }}" id="ai-assistant-sidenav-option">
+                                <a href="#">
+                                    <i class="fa-solid fa-robot fa-fw"></i>
+                                    <span>AI Assistant</span>
+                                    <x-icon type="angle-left" class="pull-right fa-fw"/>
+                                </a>
+
+                                <ul class="treeview-menu">
+                                    <li {!! (request()->is('ai-assistant') ? ' class="active"' : '') !!}>
+                                        <a href="{{ url('ai-assistant') }}">
+                                            <x-icon type="circle" class="text-grey fa-fw"/>
+                                            File Upload
+                                        </a>
+                                    </li>
+                                </ul>
+                            </li>
+                        @endcan
                         @can('import')
                             <li id="import-sidenav-option"{!! (request()->is('import*') ? ' class="active"' : '') !!}>
                                 <a href="{{ route('imports.index') }}">
