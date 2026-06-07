@@ -1418,6 +1418,33 @@
             log.scrollTop = log.scrollHeight;
         }
 
+        // Keyboard shortcuts: Enter to send (Shift+Enter = newline), Ctrl/Cmd+Enter to send
+        if (input) {
+            input.addEventListener('keydown', function(e) {
+                var isEnter = e.key === 'Enter' || e.keyCode === 13;
+                if (!isEnter) return;
+
+                // Send when Enter pressed without Shift/Alt, or when Ctrl/Cmd+Enter pressed
+                var ctrlOrMeta = e.ctrlKey || e.metaKey;
+                var sendOnEnter = !e.shiftKey && !e.altKey;
+
+                if (sendOnEnter || ctrlOrMeta) {
+                    e.preventDefault();
+                    if (form) {
+                        if (typeof form.requestSubmit === 'function') {
+                            form.requestSubmit();
+                        } else if (sendBtn && typeof sendBtn.click === 'function') {
+                            sendBtn.click();
+                        } else {
+                            form.dispatchEvent(new Event('submit', {
+                                cancelable: true
+                            }));
+                        }
+                    }
+                }
+            });
+        }
+
         form.addEventListener('submit', function(e) {
             e.preventDefault();
             var msg = (input.value || '').trim();

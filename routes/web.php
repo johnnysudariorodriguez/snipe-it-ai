@@ -36,7 +36,7 @@ use Illuminate\Support\Facades\Route;
 use Tabuna\Breadcrumbs\Trail;
 
 Route::group(['middleware' => 'auth'], function () {
-    Route::post(config('ai_chat.http_uri', 'ai-chat/message'), [AiChatController::class, 'message'])
+    Route::post(config('ai_chat.http_uri', 'ai-chat/message'), [\App\Http\Controllers\ChatController::class, 'handle'])
         ->middleware('throttle:ai-chat')
         ->name('ai-chat.message');
 

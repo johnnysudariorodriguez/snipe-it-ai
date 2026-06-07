@@ -66,6 +66,26 @@ TXT;
 
         $lower = Str::lower($input);
 
+        // Natural language intent shortcuts
+        if (preg_match('/\b(how many assets|how many assets do we have|total assets|number of assets|count of assets)\b/i', $input)) {
+            return $this->assetCount($actor);
+        }
+
+        if (preg_match('/\b(what assets are currently available|available laptops|show available|which assets are available)\b/i', $input)) {
+            // Map to requestable / available listing where appropriate
+            return $this->searchRequestable($actor, '');
+        }
+
+        if (preg_match('/\bwho(?:\s+is|\s+has)?(?:\s+assigned)?(?:\s+to)?\s+(?:asset\s+)?([A-Za-z0-9\-\_]+)\b/i', $input, $m)) {
+            return $this->findAsset($actor, trim($m[1]));
+        }
+
+        if (preg_match('/\b(find|show|list)\s+(?:.*\b(dell|hp|lenovo|macbook|asus|acer)\b.*)/i', $input, $m)) {
+            // Vendor/manufacturer search — forward the full phrase to asset finder
+            $term = trim(str_replace($m[1], '', $input));
+            return $this->findAsset($actor, $term ?: $m[2]);
+        }
+
         if (in_array($lower, ['ops help', 'help ops', 'operations help', '/ops'], true)) {
             return $this->operationsHelp();
         }
