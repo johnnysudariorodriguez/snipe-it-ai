@@ -82,10 +82,13 @@
                             <h3 class="box-title">Knowledge Base Documents</h3>
                             <div class="box-tools pull-right">
                                 <button id="kb-refresh" class="btn btn-default btn-sm">Refresh</button>
+                                <button id="kb-test-query-btn" class="btn btn-primary btn-sm" style="margin-left:6px">Test
+                                    Query</button>
                             </div>
                         </div>
 
                         <div class="box-body">
+                            <div id="kb-query-result" style="margin-top:12px"></div>
                             <div id="kb-empty-state" class="text-center" style="display:none;padding:40px">
                                 <i class="fa fa-folder-open fa-4x" style="color:#d2d6de"></i>
                                 <h4 style="margin-top:12px">No documents uploaded yet</h4>

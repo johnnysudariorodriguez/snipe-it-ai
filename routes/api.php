@@ -1377,4 +1377,8 @@ Route::group(['prefix' => 'v1', 'middleware' => ['api', 'api-throttle:api']], fu
     )->name('api.files.destroy')
         ->where(['object_type' => 'accessories|assets|components|consumables|hardware|licenses|locations|maintenances|models|suppliers|users']);
 
+    // AI RAG endpoints (generated)
+    Route::post('ai/upload', [\App\Http\Controllers\AiChatController::class, 'upload'])->name('api.ai.upload');
+    Route::post('ai/chat', [\App\Http\Controllers\AiChatController::class, 'chat'])->name('api.ai.chat');
+
 }); // end API routes

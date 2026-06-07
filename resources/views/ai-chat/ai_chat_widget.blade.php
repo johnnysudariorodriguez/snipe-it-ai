@@ -22,38 +22,7 @@
         {{-- Two-tab layout: Home (help/search) and Messages (chat) --}}
         <div class="snipe-ai-tabs">
 
-            <div id="snipe-ai-tab-home" class="snipe-ai-tab snipe-ai-tab-active" role="tabpanel" aria-hidden="false">
-                <div class="snipe-ai-home-header">
-                    <div class="snipe-ai-home-title">Get help from Snipe‑IT Support</div>
-                </div>
-                <div class="snipe-ai-search-wrap">
-                    <div class="snipe-ai-search">
-                        <input id="snipe-ai-search-input" type="search" placeholder="Search for help"
-                            aria-label="Search for help">
-                        <button type="button" class="snipe-ai-search-icon" aria-hidden="true">🔍</button>
-                    </div>
-                    <ul class="snipe-ai-suggestions" id="snipe-ai-suggestions">
-                        <li class="snipe-ai-suggestion"
-                            data-query="Network recommendations for ChatGPT errors on web and apps">Network
-                            recommendations for ChatGPT errors on web and apps</li>
-                        <li class="snipe-ai-suggestion" data-query="How can I contact support?">How can I contact
-                            support?</li>
-                        <li class="snipe-ai-suggestion"
-                            data-query="What happens after I submit my ID for age verification?">What happens after I
-                            submit my ID for age verification?</li>
-                        <li class="snipe-ai-suggestion"
-                            data-query="How do I request a refund for ChatGPT Plus or ChatGPT Pro?">How do I request a
-                            refund for ChatGPT Plus or ChatGPT Pro?</li>
-                    </ul>
-                </div>
-
-                <div class="snipe-ai-search-wrap">
-                    <button id="snipe-ai-ask-btn" class="snipe-ai-ask-btn" type="button" aria-label="Ask a question">
-                        <div class="snipe-ai-ask-title">Ask a question</div>
-                        <div class="snipe-ai-ask-sub">AI Agent and team can help</div>
-                    </button>
-                </div>
-            </div>
+            <!-- Messages-only mode: Home/Help tabs removed so widget shows Messages only -->
 
             <div id="snipe-ai-tab-chat" class="snipe-ai-tab" role="tabpanel" aria-hidden="true">
                 <div class="snipe-ai-chat-header messages-header history-header">
@@ -81,8 +50,7 @@
                             aria-label="Minimize">
                             <img src="/img/chatbot/minimize.png" alt="Minimize" class="snipe-ai-toggle-icon" />
                         </button> --}}
-                        <button type="button" id="snipe-ai-convo-close" class="snipe-ai-chat-close"
-                            aria-label="Close">
+                        <button type="button" id="snipe-ai-convo-close" class="snipe-ai-chat-close" aria-label="Close">
                             <img src="/img/chatbot/close.png" alt="Close" class="snipe-ai-icon" />
                         </button>
                     </div>
@@ -123,20 +91,10 @@
 
         {{-- Bottom tab bar like mobile UI --}}
         <div class="snipe-ai-bottom-nav" role="tablist" aria-label="Chat tabs">
-            <button class="nav-item nav-item-active" type="button" role="tab" data-tab="home"
-                aria-controls="snipe-ai-tab-home" aria-selected="true">
-                <span class="icon">📨</span>
-                <span class="label">Home</span>
-            </button>
-            <button class="nav-item" type="button" role="tab" data-tab="chat"
-                aria-controls="snipe-ai-tab-chat" aria-selected="false">
+            <button class="nav-item nav-item-active" type="button" role="tab" data-tab="chat"
+                aria-controls="snipe-ai-tab-chat" aria-selected="true">
                 <span class="icon">💬</span>
                 <span class="label">Messages</span>
-            </button>
-            <button class="nav-item" type="button" role="tab" data-tab="help"
-                aria-controls="snipe-ai-tab-home" aria-selected="false">
-                <span class="icon">❓</span>
-                <span class="label">Help</span>
             </button>
         </div>
     </div>
@@ -946,7 +904,7 @@
         var searchInput = document.getElementById('snipe-ai-search-input');
         var suggestions = document.getElementById('snipe-ai-suggestions');
         var askBtn = document.getElementById('snipe-ai-ask-btn');
-        var tabHome = document.getElementById('snipe-ai-tab-home');
+        // Home tab removed: only chat tab is used
         var tabChat = document.getElementById('snipe-ai-tab-chat');
         var navItems = panel.querySelectorAll('.snipe-ai-bottom-nav .nav-item');
         var dragStoreKey = 'snipeAiChatWidgetPosV1';
@@ -1279,45 +1237,38 @@
         }
 
         function switchTab(which) {
-            // map help to home for now
-            if (which === 'help') which = 'home';
+            // Only 'chat' is supported in this mode; map other values to 'chat'
+            if (which === 'help' || which === 'home') which = 'chat';
 
-            if (which === 'home') {
-                tabHome.classList.add('snipe-ai-tab-active');
-                tabHome.setAttribute('aria-hidden', 'false');
-                tabChat.classList.remove('snipe-ai-tab-active');
-                tabChat.setAttribute('aria-hidden', 'true');
-            } else if (which === 'chat') {
+            // Activate chat tab
+            if (tabChat) {
                 tabChat.classList.add('snipe-ai-tab-active');
                 tabChat.setAttribute('aria-hidden', 'false');
-                tabHome.classList.remove('snipe-ai-tab-active');
-                tabHome.setAttribute('aria-hidden', 'true');
-
-                // Always show the messages list when entering Messages tab
-                if (messagesList) {
-                    messagesList.style.display = '';
-                }
-                if (log) {
-                    log.hidden = true;
-                }
-                if (form) {
-                    form.hidden = true;
-                }
-                // show history header, hide convo header
-                var historyHeader = panel.querySelector('.history-header');
-                if (historyHeader) historyHeader.hidden = false;
-                if (convoHeader) convoHeader.hidden = true;
-                // show bottom nav
-                var bottomNav = panel.querySelector('.snipe-ai-bottom-nav');
-                if (bottomNav) bottomNav.style.display = '';
-                panel.classList.remove('convo-open');
-                renderMessagesList();
             }
 
-            // update nav active state
+            // Hide any legacy home tab if present
+            var tabHomeEl = document.getElementById('snipe-ai-tab-home');
+            if (tabHomeEl) {
+                tabHomeEl.classList.remove('snipe-ai-tab-active');
+                tabHomeEl.setAttribute('aria-hidden', 'true');
+            }
+
+            // Ensure messages list is visible and history header shown
+            if (messagesList) messagesList.style.display = '';
+            if (log) log.hidden = true;
+            if (form) form.hidden = true;
+            var historyHeader = panel.querySelector('.history-header');
+            if (historyHeader) historyHeader.hidden = false;
+            if (convoHeader) convoHeader.hidden = true;
+            var bottomNav = panel.querySelector('.snipe-ai-bottom-nav');
+            if (bottomNav) bottomNav.style.display = '';
+            panel.classList.remove('convo-open');
+            renderMessagesList();
+
+            // update nav active state (mark chat active)
             if (navItems && navItems.length) {
                 Array.from(navItems).forEach(function(it) {
-                    if ((it.dataset && it.dataset.tab) === which) {
+                    if ((it.dataset && it.dataset.tab) === 'chat') {
                         it.classList.add('nav-item-active');
                         it.setAttribute('aria-selected', 'true');
                     } else {
@@ -1332,14 +1283,14 @@
         if (navItems && navItems.length) {
             Array.from(navItems).forEach(function(it) {
                 it.addEventListener('click', function() {
-                    var t = it.dataset && it.dataset.tab ? it.dataset.tab : 'home';
+                    var t = it.dataset && it.dataset.tab ? it.dataset.tab : 'chat';
                     switchTab(t);
                 });
             });
         }
 
-        // ensure initial tab is Home
-        switchTab('home');
+        // ensure initial tab is Messages
+        switchTab('chat');
 
         // wire convo close button (top-right in convo header)
         if (convoCloseBtn) convoCloseBtn.addEventListener('click', function() {

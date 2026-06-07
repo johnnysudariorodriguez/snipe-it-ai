@@ -7,6 +7,7 @@
         ];
         const ALLOWED_EXT = ['pdf', 'docx', 'doc', 'txt'];
         const LS_KEY = 'kb_files_v1';
+        const stagedFiles = {};
 
         const fileInput = document.getElementById('kb-file-input');
         const dropArea = document.getElementById('kb-drop-area');
@@ -154,6 +155,9 @@
                     status: 'Pending'
                 };
 
+                // keep actual File object in memory until finalized
+                stagedFiles[meta.id] = file;
+
                 // UI progress (table row)
                 const barId = 'progress-' + generateId();
                 const tr = document.createElement('tr');
@@ -242,16 +246,117 @@
                 showMessage('No staged files', 'warning');
                 return;
             }
-            const files = loadState();
-            s.forEach(it => files.unshift(it));
-            saveState(files);
-            sessionStorage.removeItem('kb_staging_v1');
-            if (uploadTbody) uploadTbody.innerHTML = '';
-            renderStaging();
-            renderFileList();
-            updateOverallProgress();
-            showTopAlert('Finalized ' + s.length + ' file(s)', 'success');
+            // perform real uploads to backend Laravel -> Python service
+            const filesState = loadState();
+            const uploadUrl = '{{ route('api.ai.upload') }}';
+
+            (async () => {
+                // work on a copy of staging so we can modify it
+                let staging = loadStaging();
+                for (const meta of Array.from(staging)) {
+                    const file = stagedFiles[meta.id];
+                    if (!file) {
+                        // no file blob available (shouldn't happen)
+                        meta.status = 'Error';
+                        // update staging item
+                        const idx = staging.findIndex(x => x.id === meta.id);
+                        if (idx !== -1) staging[idx] = meta;
+                        saveStaging(staging);
+                        continue;
+                    }
+
+                    const form = new FormData();
+                    form.append('file', file, file.name);
+
+                    try {
+                        const resp = await fetch(uploadUrl, {
+                            method: 'POST',
+                            body: form,
+                            credentials: 'same-origin',
+                            headers: {
+                                'Accept': 'application/json'
+                            }
+                        });
+
+                        const ctype = resp.headers.get('content-type') || '';
+                        let json = null;
+                        let text = null;
+                        if (ctype.indexOf('application/json') !== -1) {
+                            json = await resp.json().catch(() => null);
+                        } else {
+                            text = await resp.text().catch(() => null);
+                        }
+
+                        if (resp.ok && json && json.status === 'ok') {
+                            meta.status = 'Indexed';
+                            meta.inserted = json.inserted || 0;
+                            filesState.unshift(meta);
+                            // remove from staging
+                            staging = staging.filter(x => x.id !== meta.id);
+                            delete stagedFiles[meta.id];
+                            showTopAlert('Inserted ' + (json.inserted || 0) + ' chunks into knowledge base', 'success');
+                        } else {
+                            meta.status = 'Error';
+                            let msg = 'Upload failed';
+                            if (json && (json.detail || json.message)) msg = json.detail || json.message;
+                            else if (text) msg = text.substring(0, 300);
+                            // update staging with error status so user can retry
+                            const idx = staging.findIndex(x => x.id === meta.id);
+                            if (idx !== -1) staging[idx] = meta;
+                            showTopAlert(msg, 'danger');
+                        }
+
+                    } catch (e) {
+                        meta.status = 'Error';
+                        const idx = staging.findIndex(x => x.id === meta.id);
+                        if (idx !== -1) staging[idx] = meta;
+                        showTopAlert('Upload failed: ' + e.message, 'danger');
+                    }
+
+                    saveState(filesState);
+                    saveStaging(staging);
+                }
+
+                // clear upload table UI and re-render
+                if (uploadTbody) uploadTbody.innerHTML = '';
+                renderStaging();
+                renderFileList();
+                updateOverallProgress();
+            })();
         }
+
+        // Test Query button handler
+        const testQueryBtn = document.getElementById('kb-test-query-btn');
+        if (testQueryBtn) testQueryBtn.addEventListener('click', async function () {
+            const q = prompt('Enter a test query to run against the knowledge base:');
+            if (!q) return;
+            const url = '{{ route('api.ai.chat') }}';
+            try {
+                const r = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ question: q })
+                });
+                const j = await r.json();
+                const out = document.getElementById('kb-query-result');
+                if (!out) return;
+                if (!r.ok) {
+                    out.innerHTML = '<div class="alert alert-danger">Query failed: ' + (j.message || r.statusText) + '</div>';
+                    return;
+                }
+
+                // display brief preview
+                const answer = j.answer || j.message || j.reply || '';
+                const source = j.source || '';
+                const steps = j.steps || [];
+                out.innerHTML = `<div class="well"><strong>Answer (source: ${escapeHtml(source)})</strong><div style="margin-top:8px">${escapeHtml(answer)}</div><div style="margin-top:8px;color:#666">Steps: ${steps.length}</div></div>`;
+
+            } catch (e) {
+                const out = document.getElementById('kb-query-result');
+                if (out) out.innerHTML = '<div class="alert alert-danger">Query error: ' + escapeHtml(e.message) + '</div>';
+            }
+        });
 
         // table actions (catch clicks on any element with data-action)
         tbody.addEventListener('click', function(e) {

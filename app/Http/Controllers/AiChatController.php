@@ -2,196 +2,346 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\AiOperationsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Str;
+use App\Models\Asset;
+use App\Models\AiChatMessage;
 
 class AiChatController extends Controller
 {
-    private const SYSTEM_PROMPT = 'You help Snipe-IT users with IT asset management concepts, navigation, and best practices. '
-        .'Be concise. You cannot see this organization\'s live asset data; if they ask for counts or specific records, explain they should use the Snipe-IT UI or reports.';
+    private const SYSTEM_PROMPT = "
+You are an enterprise AI agent for an IT asset management system.
 
-    /**
-     * Full system text for Gemini/OpenAI including built-in chat command catalog.
-     */
-    protected function llmPrompt(): string
-    {
-        return trim(self::SYSTEM_PROMPT.AiOperationsService::llmCommandsInstructions());
-    }
+You operate using tools:
+- MYSQL_QUERY
+- GENERAL_REASONING
+
+RULES:
+- Never guess database values
+- Always use tools for factual questions
+- Be concise and structured
+- If unsure, ask clarification
+";
 
     public function __construct()
     {
         $this->middleware('auth');
     }
 
+    /**
+     * =========================
+     * MAIN AGENT ENTRYPOINT
+     * =========================
+     */
     public function message(Request $request)
     {
         $request->validate([
             'message' => 'required|string|max:8000',
         ]);
 
-        $operationsReply = app(AiOperationsService::class)->handle((string) $request->input('message'), $request->user());
-        if ($operationsReply !== null) {
-            return response()->json([
-                'reply' => $operationsReply['reply'],
-                'links' => $operationsReply['links'] ?? [],
-            ]);
-        }
+        $user = $request->user();
+        $message = trim($request->input('message'));
 
-        if (config('ai_chat.llm_requires_superuser') && ! $request->user()->isSuperUser()) {
-            return response()->json([
-                'error' => __('Only superadmins may use the cloud AI assistant. Try built-in commands like `ops help`.'),
-            ], 403);
-        }
+        /**
+         * STEP 1: Load memory
+         */
+        $memory = $this->loadMemory($user->id);
 
-        $provider = Str::lower((string) config('ai_chat.provider', 'openai'));
-        if ($provider === 'gemini') {
-            return $this->messageWithGemini((string) $request->input('message'));
-        }
+        /**
+         * STEP 2: Agent decides action (tool selection)
+         */
+        $plan = $this->decideTool($message, $memory);
 
-        return $this->messageWithOpenAi((string) $request->input('message'));
-    }
+        /**
+         * STEP 3: Execute tool (if any)
+         * The router returns a tool name and optional params. Call the authorized tool wrapper.
+         */
+        $toolResult = $this->executeTool($plan['tool'] ?? null, $plan['params'] ?? null);
 
-    protected function messageWithOpenAi(string $message)
-    {
-        $key = (string) config('ai_chat.openai_key');
-        if ($key === '') {
-            return response()->json(['error' => __('AI assistant is not configured (missing OPENAI_API_KEY).')], 503);
-        }
+        /**
+         * STEP 4: Final reasoning pass
+         */
+        $finalPrompt = $this->buildFinalPrompt($message, $memory, $plan, $toolResult);
 
-        $response = Http::withToken($key)
-            ->acceptJson()
-            ->timeout(90)
-            ->post((string) config('ai_chat.openai_url'), [
-                'model' => (string) config('ai_chat.openai_model', 'gpt-4o-mini'),
-                'messages' => [
-                    ['role' => 'system', 'content' => $this->llmPrompt()],
-                    ['role' => 'user', 'content' => $message],
-                ],
-            ]);
+        $reply = $this->callLLM($finalPrompt);
 
-        if (! $response->successful()) {
-            $upstreamMessage = data_get($response->json(), 'error.message');
-            return response()->json([
-                'error' => $upstreamMessage ?: __('The AI service returned an error.'),
-            ], 502);
-        }
-
-        $text = data_get($response->json(), 'choices.0.message.content');
-        return response()->json(['reply' => (string) ($text ?? '')]);
-    }
-
-    protected function messageWithGemini(string $message)
-    {
-        $key = (string) config('ai_chat.gemini_key');
-        if ($key === '') {
-            return response()->json(['error' => __('AI assistant is not configured (missing GEMINI_API_KEY).')], 503);
-        }
-
-        // Some Gemini REST versions reject `systemInstruction`. Embed instructions in the user turn for broad compatibility.
-        $combined = $this->llmPrompt()."\n\n---\n\n".$message;
-        $payload = [
-            'contents' => [
-                [
-                    'role' => 'user',
-                    'parts' => [
-                        ['text' => $combined],
-                    ],
-                ],
-            ],
-        ];
-
-        $response = null;
-
-        foreach ($this->geminiModelCandidates() as $model) {
-            // Prefer stable v1 first; v1beta model availability differs by project and often shows "model not found" for 1.5.
-            foreach (['v1', 'v1beta'] as $version) {
-                $response = $this->postGeminiGenerateContent($key, $model, $version, $payload);
-                if ($response->successful()) {
-                    $text = data_get($response->json(), 'candidates.0.content.parts.0.text');
-
-                    return response()->json(['reply' => (string) ($text ?? '')]);
-                }
-                if (! $this->shouldContinueGeminiAttempts($response)) {
-                    $upstreamMessage = data_get($response->json(), 'error.message');
-
-                    return response()->json([
-                        'error' => $upstreamMessage ?: __('The AI service returned an error.'),
-                    ], 502);
-                }
-            }
-        }
-
-        $upstreamMessage = data_get($response?->json(), 'error.message');
+        /**
+         * STEP 5: Save memory
+         */
+        $this->storeMemory($user->id, $message, $reply);
 
         return response()->json([
-            'error' => $upstreamMessage ?: __('The AI service returned an error.'),
-        ], 502);
+            'reply' => $reply,
+            'plan' => $plan,
+            'tool_result' => $toolResult
+        ]);
     }
 
     /**
-     * @return list<string>
+     * =========================
+     * TOOL ROUTER (LLM BRAIN)
+     * =========================
      */
-    protected function geminiModelCandidates(): array
+    protected function decideTool(string $message, array $memory): array
     {
-        $default = 'gemini-2.5-flash';
-        $primary = preg_replace('/^models\//', '', trim((string) config('ai_chat.gemini_model', $default))) ?: $default;
-        $fallbacks = config('ai_chat.gemini_model_fallbacks', []);
-        if (! is_array($fallbacks)) {
-            $fallbacks = [];
+        $system = "
+You are a tool router for an enterprise database AI agent.
+You MUST choose exactly ONE tool from the following list or return GENERAL_REASONING if no tool applies:
+
+- get_asset_count
+- get_assets_by_status
+- find_asset_by_tag
+- get_users
+- get_suppliers
+- get_categories
+- get_locations
+- get_departments
+
+Return JSON ONLY:
+
+{
+  \"tool\": \"<tool name> | GENERAL_REASONING\",
+  \"params\": { /* optional parameters */ }
+}
+
+Map user language (for example, 'deployable' -> status='available').
+";
+
+        $res = Http::withToken(config('ai_chat.openai_key'))
+            ->post(config('ai_chat.openai_url'), [
+                'model' => 'gpt-4o-mini',
+                'messages' => [
+                    ['role' => 'system', 'content' => $system],
+                    ['role' => 'user', 'content' => json_encode([
+                        'message' => $message,
+                        'memory' => $memory
+                    ])]
+                ],
+                'temperature' => 0
+            ]);
+
+        $content = data_get($res->json(), 'choices.0.message.content', '{}');
+        $decoded = json_decode($content, true);
+
+        if (!is_array($decoded) || !isset($decoded['tool'])) {
+            return [
+                'tool' => 'GENERAL_REASONING',
+                'params' => []
+            ];
         }
 
-        $models = array_merge([$primary], $fallbacks);
-        $normalized = [];
-        foreach ($models as $m) {
-            $m = preg_replace('/^models\//', '', trim((string) $m));
-            if ($m !== '') {
-                $normalized[] = $m;
+        if (!isset($decoded['params']) || !is_array($decoded['params'])) {
+            $decoded['params'] = [];
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * =========================
+     * MYSQL TOOL EXECUTOR
+     * =========================
+     */
+    protected function executeMysqlTool(?string $query)
+    {
+        if (!$query) {
+            return null;
+        }
+
+        $q = strtolower($query);
+
+        // SAFE OPERATIONS ONLY (no raw SQL execution)
+        if (str_contains($q, 'count')) {
+            return [
+                'type' => 'count',
+                'value' => Asset::count()
+            ];
+        }
+
+        if (str_contains($q, 'available')) {
+            return [
+                'type' => 'available_assets',
+                'items' => Asset::where('status', 'available')
+                    ->limit(20)
+                    ->get()
+                    ->toArray()
+            ];
+        }
+
+        if (str_contains($q, 'asset')) {
+            return [
+                'type' => 'asset_search',
+                'items' => Asset::limit(10)->get()->toArray()
+            ];
+        }
+
+        return [
+            'type' => 'unknown',
+            'items' => []
+        ];
+    }
+
+    /**
+     * =========================
+     * FINAL REASONING STAGE
+     * =========================
+     */
+    protected function buildFinalPrompt($message, $memory, $plan, $toolResult)
+    {
+        return "
+You are a high-precision AI agent.
+
+REQUIREMENTS:
+- Always choose a tool for factual questions and use its output.
+- Never guess or hallucinate database values.
+- If tool output is empty or indicates an error, ask for clarification.
+- Be concise and structured in your response.
+
+USER QUESTION:
+{$message}
+
+TOOL PLAN:
+" . json_encode($plan, JSON_PRETTY_PRINT) . "
+
+TOOL RESULT:
+" . json_encode($toolResult, JSON_PRETTY_PRINT) . "
+
+MEMORY:
+" . json_encode($memory, JSON_PRETTY_PRINT) . "
+
+INSTRUCTIONS:
+- If tool_result exists, answer using only that data.
+- If tool_result is null or contains an error, ask the user for clarification or state that a tool is required.
+";
+    }
+
+    /**
+     * =========================
+     * LLM CALL
+     * =========================
+     */
+    protected function callLLM(string $prompt): string
+    {
+        $res = Http::withToken(config('ai_chat.openai_key'))
+            ->post(config('ai_chat.openai_url'), [
+                'model' => 'gpt-4o-mini',
+                'messages' => [
+                    ['role' => 'system', 'content' => self::SYSTEM_PROMPT],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+                'temperature' => 0.2
+            ]);
+
+        return data_get($res->json(), 'choices.0.message.content', 'No response');
+    }
+
+    /**
+     * =========================
+     * MEMORY SYSTEM
+     * =========================
+     */
+    protected function loadMemory($userId)
+    {
+        return AiChatMessage::where('user_id', $userId)
+            ->latest()
+            ->limit(6)
+            ->get(['question', 'answer'])
+            ->toArray();
+    }
+
+    protected function storeMemory($userId, $q, $a)
+    {
+        AiChatMessage::create([
+            'user_id' => $userId,
+            'question' => $q,
+            'answer' => $a
+        ]);
+    }
+
+    /**
+     * Execute an allowed tool by name, passing normalized params.
+     * Tools are expected to be provided externally (functions or services).
+     */
+    protected function executeTool(?string $tool, ?array $params = null)
+    {
+        if (!$tool || $tool === 'GENERAL_REASONING') {
+            return null;
+        }
+
+        $allowed = [
+            'get_asset_count',
+            'get_assets_by_status',
+            'find_asset_by_tag',
+            'get_users',
+            'get_suppliers',
+            'get_categories',
+            'get_locations',
+            'get_departments',
+        ];
+
+        if (!in_array($tool, $allowed)) {
+            return [
+                'error' => 'unsupported_tool',
+                'tool' => $tool
+            ];
+        }
+
+        $params = $params ?? [];
+        if (isset($params['status'])) {
+            $params['status'] = $this->normalizeStatus($params['status']);
+        }
+
+        return $this->callExternalTool($tool, $params);
+    }
+
+    /**
+     * Call the external/tool function if available. Fall back to a structured error.
+     * Expected function signatures (examples):
+     * - get_asset_count()
+     * - get_assets_by_status(string $status)
+     * - find_asset_by_tag(string $tag)
+     */
+    protected function callExternalTool(string $tool, array $params = [])
+    {
+        if (function_exists($tool)) {
+            try {
+                switch ($tool) {
+                    case 'get_asset_count':
+                        return call_user_func($tool);
+                    case 'get_assets_by_status':
+                        return call_user_func($tool, $params['status'] ?? null);
+                    case 'find_asset_by_tag':
+                        return call_user_func($tool, $params['tag'] ?? null);
+                    case 'get_users':
+                    case 'get_suppliers':
+                    case 'get_categories':
+                    case 'get_locations':
+                    case 'get_departments':
+                        return call_user_func($tool);
+                    default:
+                        return ['error' => 'unhandled_tool', 'tool' => $tool];
+                }
+            } catch (\Throwable $e) {
+                return ['error' => 'tool_exception', 'message' => $e->getMessage()];
             }
         }
 
-        return array_values(array_unique($normalized));
+        return ['error' => 'tool_not_available', 'tool' => $tool];
     }
 
-    protected function shouldContinueGeminiAttempts(\Illuminate\Http\Client\Response $response): bool
+    /**
+     * Normalize human-friendly status labels into canonical status values.
+     */
+    protected function normalizeStatus($status)
     {
-        if ($response->successful()) {
-            return false;
-        }
+        $s = strtolower(trim((string) $status));
+        $map = [
+            'deployable' => 'available',
+            'available' => 'available',
+            'in use' => 'in_use',
+            'deployed' => 'in_use',
+        ];
 
-        $status = $response->status();
-        if (in_array($status, [401, 403], true)) {
-            return false;
-        }
-
-        $msg = Str::lower((string) data_get($response->json(), 'error.message', ''));
-
-        if (Str::contains($msg, ['api key', 'permission denied', 'blocked', 'billing'])) {
-            return false;
-        }
-
-        if (Str::contains($msg, ['quota', 'rate limit', 'resource exhausted'])) {
-            return false;
-        }
-
-        return Str::contains($msg, ['not found', 'not supported', 'unsupported'])
-            || Str::contains($msg, ['404']);
+        return $map[$s] ?? $s;
     }
-
-    protected function postGeminiGenerateContent(string $apiKey, string $model, string $apiVersion, array $payload)
-    {
-        $urlTemplate = (string) config('ai_chat.gemini_url_template');
-        $baseUrl = str_replace(
-            ['{api_version}', '{model}'],
-            [rawurlencode($apiVersion), rawurlencode($model)],
-            $urlTemplate
-        );
-        $url = $baseUrl.(str_contains($baseUrl, '?') ? '&' : '?').'key='.rawurlencode($apiKey);
-
-        return Http::acceptJson()
-            ->timeout(90)
-            ->post($url, $payload);
-    }
-
 }

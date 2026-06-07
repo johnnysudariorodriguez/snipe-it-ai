@@ -1,0 +1,5 @@
+Snipe-IT Installation Guide
+
+This document describes installation and configuration steps for Snipe-IT. It includes asset tracking, serial numbers, and basic troubleshooting steps.
+
+Keywords: installation, assets, serial, snipe-it, troubleshooting
