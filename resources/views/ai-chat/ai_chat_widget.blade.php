@@ -879,6 +879,25 @@
             transition: none !important;
         }
     }
+
+    /* Thinking and typing UI */
+    .snipe-ai-chat-bubble.typing {
+        white-space: pre-wrap;
+        word-break: break-word;
+        opacity: 0;
+        transform: translateY(6px);
+        transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .snipe-ai-chat-bubble.typing.fade-in { opacity: 1; transform: translateY(0); }
+
+    .typing-cursor { display: inline-block; margin-left: 6px; opacity: 0.9; animation: typing-blink 1s step-start infinite; }
+
+    @keyframes typing-blink { 50% { opacity: 0; } }
+
+    .snipe-ai-chat-bubble.thinking { font-style: italic; color: #666; opacity: 0.95; }
+    .thinking-dots { margin-left: 6px; font-weight: 700; }
+
 </style>
 
 <script nonce="{{ csrf_token() }}">
@@ -1347,7 +1366,96 @@
             log.scrollTop = log.scrollHeight;
         }
 
+        // Thinking + typing helpers
+        var __thinkingState = null;
+
+        function createThinkingBubble() {
+            if (!log) return null;
+            var d = document.createElement('div');
+            d.className = 'snipe-ai-chat-bubble ai thinking';
+            var textSpan = document.createElement('span');
+            textSpan.textContent = 'AI is thinking';
+            var dots = document.createElement('span');
+            dots.className = 'thinking-dots';
+            dots.textContent = '';
+            d.appendChild(textSpan);
+            d.appendChild(dots);
+            log.appendChild(d);
+            log.scrollTop = log.scrollHeight;
+            var state = { el: d, dots: dots, interval: null };
+            var counter = 0;
+            state.interval = setInterval(function() {
+                counter = (counter + 1) % 4;
+                dots.textContent = '.'.repeat(counter);
+                log.scrollTop = log.scrollHeight;
+            }, 400);
+            __thinkingState = state;
+            return state;
+        }
+
+        function removeThinkingBubble(state) {
+            try {
+                if (!state) state = __thinkingState;
+                if (!state) return;
+                if (state.interval) clearInterval(state.interval);
+                if (state.el && state.el.parentNode) state.el.parentNode.removeChild(state.el);
+            } catch (e) {
+                // ignore
+            } finally {
+                __thinkingState = null;
+            }
+        }
+
+        function typeAndAppendAiReply(text, links) {
+            return new Promise(function(resolve) {
+                if (!log) return resolve();
+                var d = document.createElement('div');
+                d.className = 'snipe-ai-chat-bubble ai typing fade-in';
+                var contentSpan = document.createElement('span');
+                contentSpan.className = 'typing-content';
+                d.appendChild(contentSpan);
+                var cursor = document.createElement('span');
+                cursor.className = 'typing-cursor';
+                cursor.textContent = '|';
+                d.appendChild(cursor);
+                log.appendChild(d);
+                var i = 0;
+                var speed = 14; // ms per char
+                if (text === null || text === undefined) text = '';
+                var timer = setInterval(function() {
+                    contentSpan.textContent += text.charAt(i);
+                    i++;
+                    log.scrollTop = log.scrollHeight;
+                    if (i >= text.length) {
+                        clearInterval(timer);
+                        setTimeout(function() {
+                            if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
+                            if (links && links.length) {
+                                var wrap = document.createElement('div');
+                                wrap.className = 'snipe-ai-chat-links';
+                                for (var j = 0; j < links.length; j++) {
+                                    var item = links[j];
+                                    if (!item || !item.url) continue;
+                                    var a = document.createElement('a');
+                                    a.href = item.url;
+                                    a.textContent = item.label || item.url;
+                                    a.target = '_blank';
+                                    a.rel = 'noopener noreferrer';
+                                    wrap.appendChild(a);
+                                }
+                                if (wrap.childNodes.length) log.appendChild(wrap);
+                            }
+                            log.scrollTop = log.scrollHeight;
+                            resolve();
+                        }, 180);
+                    }
+                }, speed);
+            });
+        }
+
+        // Backwards-compatible simple append
         function appendAiReply(text, links) {
+            // append instantly (fallback)
             appendBubble(text, 'ai');
             if (links && links.length) {
                 var wrap = document.createElement('div');
@@ -1362,9 +1470,7 @@
                     a.rel = 'noopener noreferrer';
                     wrap.appendChild(a);
                 }
-                if (wrap.childNodes.length) {
-                    log.appendChild(wrap);
-                }
+                if (wrap.childNodes.length) log.appendChild(wrap);
             }
             log.scrollTop = log.scrollHeight;
         }
@@ -1418,6 +1524,8 @@
             });
             appendBubble(msg, 'user');
             input.value = '';
+            // show thinking indicator
+            var thinking = createThinkingBubble();
             sendBtn.disabled = true;
 
             fetch(endpoint, {
@@ -1450,28 +1558,33 @@
                 })
                 .then(function(x) {
                     if (x.ok && x.j.reply !== undefined) {
-                        // store AI reply
                         var replyText = x.j.reply || '(empty)';
-                        if (currentConversationId && messagesStore[currentConversationId]) {
-                            messagesStore[currentConversationId].messages.push({
-                                from: 'ai',
-                                text: replyText
-                            });
-                        }
-                        appendAiReply(replyText, x.j.links || []);
+                        // remove thinking indicator
+                        removeThinkingBubble(thinking);
+
+                        // type AI reply, then store it
+                        typeAndAppendAiReply(replyText, x.j.links || []).then(function() {
+                            if (currentConversationId && messagesStore[currentConversationId]) {
+                                messagesStore[currentConversationId].messages.push({
+                                    from: 'ai',
+                                    text: replyText
+                                });
+                            }
+                            sendBtn.disabled = false;
+                        });
                     } else {
-                        var errLine = (x.j && (x.j.error || x.j.message)) ? (x.j.error || x.j.message) :
-                            '';
-                        appendBubble(errLine || ('Request failed (HTTP ' + (x.status || '?') + ')'),
-                            'err');
+                        removeThinkingBubble(thinking);
+                        var errLine = (x.j && (x.j.error || x.j.message)) ? (x.j.error || x.j.message) : '';
+                        appendBubble(errLine || ('Request failed (HTTP ' + (x.status || '?') + ')'), 'err');
+                        sendBtn.disabled = false;
                     }
                 })
                 .catch(function() {
+                    removeThinkingBubble(thinking);
                     appendBubble('Network error', 'err');
-                })
-                .finally(function() {
                     sendBtn.disabled = false;
-                });
+                })
+            ;
         });
     })();
 </script>

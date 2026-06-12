@@ -21,7 +21,7 @@ class OpenAIChatService
     public function chat(array $messages, array $options = []): array
     {
         if ($this->apiKey === '') {
-            return ['error' => 'OpenAI API key not configured'];
+            return ['reply' => '', 'error' => 'OpenAI API key not configured'];
         }
 
         $payload = array_merge([
@@ -37,10 +37,25 @@ class OpenAIChatService
             ->post($this->endpoint, $payload);
 
         if (! $response->successful()) {
-            return ['error' => data_get($response->json(), 'error.message') ?: 'Upstream error', 'status' => $response->status()];
+            $err = data_get($response->json(), 'error.message') ?: 'Upstream error';
+            return ['reply' => '', 'error' => $err, 'status' => $response->status()];
         }
 
-        $content = data_get($response->json(), 'choices.0.message.content') ?? '';
-        return ['reply' => (string) $content, 'raw' => $response->json()];
+        $json = $response->json();
+        $content = data_get($json, 'choices.0.message.content') ?? '';
+        $tokens = data_get($json, 'usage.total_tokens') ?: data_get($json, 'usage.total', 0);
+        $model = data_get($json, 'model') ?: $this->model;
+
+        return [
+            'reply' => (string) $content,
+            'raw' => $json,
+            'tokens' => (int) $tokens,
+            'model' => (string) $model,
+        ];
+    }
+
+    public function getModel(): string
+    {
+        return $this->model;
     }
 }
