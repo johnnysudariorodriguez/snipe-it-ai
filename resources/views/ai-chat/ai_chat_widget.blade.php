@@ -15,23 +15,19 @@
                 d="M11 4h2v2h3a2 2 0 0 1 2 2v1h1a2 2 0 0 1 2 2v7a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4v-7a2 2 0 0 1 2-2h1V8a2 2 0 0 1 2-2h3V4Zm5 7H8a1 1 0 0 0-1 1v4a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3v-4a1 1 0 0 0-1-1ZM9 8v1h6V8H9Zm1.25 4.75a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Zm3.5 0a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Z" />
             <circle cx="9.25" cy="13.75" r="1.15" fill="#ff7043" />
             <circle cx="14.75" cy="13.75" r="1.15" fill="#7e57c2" />
-            // build payload; include conversation_id when this is a persisted conversation
-            var payload = { message: msg };
-            if (currentConversationId && !String(currentConversationId).startsWith('new-') && !isNaN(Number(currentConversationId))) {
-                payload.conversation_id = Number(currentConversationId);
-            }
+        </svg>
+    </button>
+    <div id="snipe-ai-chat-panel" class="snipe-ai-chat-panel" hidden role="dialog" aria-label="AI assistant">
+        {{-- header removed from top so Home tab shows full search UI without header --}}
+        {{-- Two-tab layout: Home (help/search) and Messages (chat) --}}
+        <div class="snipe-ai-tabs">
 
-            fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': token,
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    credentials: 'same-origin',
-                    body: JSON.stringify(payload)
-                })
+            <!-- Messages-only mode: Home/Help tabs removed so widget shows Messages only -->
+
+            <div id="snipe-ai-tab-chat" class="snipe-ai-tab" role="tabpanel" aria-hidden="true">
+                <div class="snipe-ai-chat-header messages-header history-header">
+                    <div class="messages-title">Messages</div>
+                    <div class="messages-placeholder"></div>
                     <button type="button" id="snipe-ai-chat-close" class="snipe-ai-chat-close"
                         aria-label="{{ trans('general.cancel') }}">
                         <img src="/img/chatbot/close.png" alt="Close" class="snipe-ai-icon snipe-ai-close-icon" />
