@@ -15,19 +15,23 @@
                 d="M11 4h2v2h3a2 2 0 0 1 2 2v1h1a2 2 0 0 1 2 2v7a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4v-7a2 2 0 0 1 2-2h1V8a2 2 0 0 1 2-2h3V4Zm5 7H8a1 1 0 0 0-1 1v4a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3v-4a1 1 0 0 0-1-1ZM9 8v1h6V8H9Zm1.25 4.75a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Zm3.5 0a1.25 1.25 0 1 1 0 2.5 1.25 1.25 0 0 1 0-2.5Z" />
             <circle cx="9.25" cy="13.75" r="1.15" fill="#ff7043" />
             <circle cx="14.75" cy="13.75" r="1.15" fill="#7e57c2" />
-        </svg>
-    </button>
-    <div id="snipe-ai-chat-panel" class="snipe-ai-chat-panel" hidden role="dialog" aria-label="AI assistant">
-        {{-- header removed from top so Home tab shows full search UI without header --}}
-        {{-- Two-tab layout: Home (help/search) and Messages (chat) --}}
-        <div class="snipe-ai-tabs">
+            // build payload; include conversation_id when this is a persisted conversation
+            var payload = { message: msg };
+            if (currentConversationId && !String(currentConversationId).startsWith('new-') && !isNaN(Number(currentConversationId))) {
+                payload.conversation_id = Number(currentConversationId);
+            }
 
-            <!-- Messages-only mode: Home/Help tabs removed so widget shows Messages only -->
-
-            <div id="snipe-ai-tab-chat" class="snipe-ai-tab" role="tabpanel" aria-hidden="true">
-                <div class="snipe-ai-chat-header messages-header history-header">
-                    <div class="messages-title">Messages</div>
-                    <div class="messages-placeholder"></div>
+            fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': token,
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    credentials: 'same-origin',
+                    body: JSON.stringify(payload)
+                })
                     <button type="button" id="snipe-ai-chat-close" class="snipe-ai-chat-close"
                         aria-label="{{ trans('general.cancel') }}">
                         <img src="/img/chatbot/close.png" alt="Close" class="snipe-ai-icon snipe-ai-close-icon" />
@@ -44,22 +48,46 @@
                             <div class="convo-name"><span id="snipe-ai-convo-name">Fin</span></div>
                             <div class="convo-time" id="snipe-ai-convo-time">Just now</div>
                         </div>
-                    </div>
-                    <div class="convo-actions">
-                        {{-- <button type="button" id="snipe-ai-convo-toggle" class="snipe-ai-convo-toggle"
-                            aria-label="Minimize">
-                            <img src="/img/chatbot/minimize.png" alt="Minimize" class="snipe-ai-toggle-icon" />
-                        </button> --}}
-                        <button type="button" id="snipe-ai-convo-close" class="snipe-ai-chat-close" aria-label="Close">
-                            <img src="/img/chatbot/close.png" alt="Close" class="snipe-ai-icon" />
-                        </button>
-                    </div>
-                </div>
+                    if (x.ok && x.j.reply !== undefined) {
+                        var replyText = x.j.reply || '(empty)';
+                        // remove thinking indicator
+                        removeThinkingBubble(thinking);
 
-                <div id="snipe-ai-messages-list" class="snipe-ai-messages-list" aria-live="polite">
-                    {{-- Message history items will be rendered here. For testing, include one sample item. --}}
-                    <div class="snipe-ai-message-item" data-convo-id="sample-1" role="button" tabindex="0">
-                        <img src="/img/chatbot/bot.png" alt="Fin" class="snipe-ai-message-avatar" />
+                        var serverId = x.j.conversation_id || null;
+                        var messagesFromServer = x.j.messages || [];
+
+                        // convert server messages to local format
+                        var localMsgs = messagesFromServer.map(function(m) {
+                            return { from: (m.role === 'assistant' ? 'ai' : 'user'), text: m.content };
+                        });
+
+                        // if server returned an ID, reconcile temp convo ID
+                        if (serverId) {
+                            if (String(currentConversationId).startsWith('new-') && messagesStore[currentConversationId]) {
+                                delete messagesStore[currentConversationId];
+                            }
+                            messagesStore[String(serverId)] = {
+                                id: String(serverId),
+                                title: x.j.title || (messagesStore[currentConversationId] ? messagesStore[currentConversationId].title : ('Conversation ' + serverId)),
+                                updated_at: (x.j.meta && x.j.meta.updated_at) ? x.j.meta.updated_at : Date.now(),
+                                messages: localMsgs.length ? localMsgs : [{ from: 'ai', text: replyText }]
+                            };
+                            currentConversationId = String(serverId);
+                        } else {
+                            // fallback: append ai reply to existing conversation
+                            if (currentConversationId && messagesStore[currentConversationId]) {
+                                messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText });
+                                messagesStore[currentConversationId].updated_at = Date.now();
+                            }
+                        }
+
+                        // type AI reply, then store it (UI already updated via messagesStore)
+                        typeAndAppendAiReply(replyText, x.j.links || []).then(function() {
+                            sendBtn.disabled = false;
+                            // refresh convo list to reflect updated_at / snippets
+                            renderMessagesList();
+                        });
+                    } else {
                         <div class="meta">
                             <div class="title">Rate your conversation</div>
                             <div class="muted">OpenAI · 1d ago</div>
@@ -922,6 +950,7 @@
 <script nonce="{{ csrf_token() }}">
     (function() {
         var endpoint = @json(filled(config('ai_chat.endpoint_override')) ? config('ai_chat.endpoint_override') : route('ai-chat.message'));
+        var convsEndpoint = @json(route('ai-chat.conversations')); // GET list, POST create
         var token = document.querySelector('meta[name="csrf-token"]');
         token = token ? token.getAttribute('content') : '';
 
@@ -1120,23 +1149,37 @@
             });
         }
 
-        // messages store (in-memory for testing)
-        var messagesStore = {
-            'sample-1': {
-                id: 'sample-1',
-                title: 'Rate your conversation',
-                updated_at: Date.now() - 24 * 60 * 60 * 1000,
-                messages: [{
-                        from: 'ai',
-                        text: 'Hi there — this is a sample reply from the AI.'
+        // messages store persisted in DB; keyed by conversation id
+        var messagesStore = {};
+
+        // Fetch conversations from server and populate messagesStore
+        function fetchConversations() {
+            fetch(convsEndpoint, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest'
                     },
-                    {
-                        from: 'user',
-                        text: 'Thanks, I have a question about billing.'
-                    }
-                ]
-            }
-        };
+                    credentials: 'same-origin'
+                })
+                .then(function(r) { return r.json().catch(function() { return {}; }); })
+                .then(function(j) {
+                    var convs = j.conversations || [];
+                    convs.forEach(function(c) {
+                        var id = String(c.id);
+                        var last = c.last_message || null;
+                        messagesStore[id] = {
+                            id: id,
+                            title: c.title || ('Conversation ' + id),
+                            updated_at: c.updated_at || Date.now(),
+                            messages: last ? [{ from: (last.role === 'assistant' ? 'ai' : 'user'), text: last.content }] : []
+                        };
+                    });
+                    renderMessagesList();
+                }).catch(function() {
+                    // ignore
+                });
+        }
 
         var currentConversationId = null;
 
@@ -1149,9 +1192,16 @@
             // clear existing items
             messagesList.innerHTML = '';
 
-            // render each convo
-            Object.keys(messagesStore).forEach(function(id) {
-                var convo = messagesStore[id];
+            // convert store to array and sort by updated_at desc
+            var convs = Object.keys(messagesStore).map(function(id) { return messagesStore[id]; });
+            convs.sort(function(a, b) {
+                var ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+                var tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+                return tb - ta;
+            });
+
+            convs.forEach(function(convo) {
+                var id = String(convo.id);
                 var item = document.createElement('div');
                 item.className = 'snipe-ai-message-item';
                 item.setAttribute('data-convo-id', id);
@@ -1170,7 +1220,13 @@
                 title.textContent = convo.title || 'Conversation';
                 var muted = document.createElement('div');
                 muted.className = 'muted';
-                muted.textContent = 'You · just now';
+                // show last message snippet if available
+                var last = (convo.messages && convo.messages.length) ? convo.messages[convo.messages.length - 1] : null;
+                if (last && last.text) {
+                    muted.textContent = (last.from === 'ai' ? 'AI: ' : 'You: ') + (String(last.text).slice(0, 60));
+                } else {
+                    muted.textContent = 'You · just now';
+                }
                 meta.appendChild(title);
                 meta.appendChild(muted);
                 var chev = document.createElement('img');
@@ -1255,13 +1311,33 @@
                 var id = item.getAttribute('data-convo-id');
                 if (id) {
                     switchTab('chat');
-                    openConversation(id);
+                    // fetch full conversation messages from server then open
+                    fetch(convsEndpoint + '/' + id, {
+                            method: 'GET',
+                            headers: {
+                                'Accept': 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            credentials: 'same-origin'
+                        })
+                        .then(function(r) { return r.json().catch(function() { return {}; }); })
+                        .then(function(j) {
+                            var msgs = j.messages || [];
+                            var localMsgs = msgs.map(function(m) { return { from: (m.role === 'assistant' ? 'ai' : 'user'), text: m.content }; });
+                            messagesStore[id] = messagesStore[id] || { id: id, title: j.title || ('Conversation ' + id), updated_at: Date.now(), messages: [] };
+                            messagesStore[id].messages = localMsgs;
+                            messagesStore[id].title = j.title || messagesStore[id].title;
+                            openConversation(id);
+                        }).catch(function() {
+                            // fallback: open what's in memory
+                            openConversation(id);
+                        });
                 }
             });
         }
 
-        // ensure messages list is rendered initially
-        renderMessagesList();
+        // ensure messages list is rendered initially (load from server)
+        fetchConversations();
 
         // Simple suggestion filtering
         if (searchInput && suggestions) {
