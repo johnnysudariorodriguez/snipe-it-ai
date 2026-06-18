@@ -164,7 +164,7 @@
         position: absolute;
         right: 1rem;
         bottom: 5.5rem;
-        width: 360px;
+        width: 760px;
         /* narrow, like second image */
         height: min(60vh, 720px);
         /* tall and responsive */
