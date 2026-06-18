@@ -249,7 +249,6 @@
             // perform real uploads to backend Laravel -> Python service
             const filesState = loadState();
             const uploadUrl = '{{ route('api.ai.upload') }}';
-
             (async () => {
                 // work on a copy of staging so we can modify it
                 let staging = loadStaging();
@@ -269,13 +268,16 @@
                     form.append('file', file, file.name);
 
                     try {
+                        // include CSRF token from meta tag so Laravel will accept POST
+                        const tokenEl = document.querySelector('meta[name="csrf-token"]');
+                        const headers = { 'Accept': 'application/json' };
+                        if (tokenEl && tokenEl.content) headers['X-CSRF-TOKEN'] = tokenEl.content;
+
                         const resp = await fetch(uploadUrl, {
                             method: 'POST',
                             body: form,
                             credentials: 'same-origin',
-                            headers: {
-                                'Accept': 'application/json'
-                            }
+                            headers
                         });
 
                         const ctype = resp.headers.get('content-type') || '';
@@ -287,6 +289,7 @@
                             text = await resp.text().catch(() => null);
                         }
 
+                        // Backwards compatible: synchronous success (indexed immediately)
                         if (resp.ok && json && json.status === 'ok') {
                             meta.status = 'Indexed';
                             meta.inserted = json.inserted || 0;
@@ -295,6 +298,20 @@
                             staging = staging.filter(x => x.id !== meta.id);
                             delete stagedFiles[meta.id];
                             showTopAlert('Inserted ' + (json.inserted || 0) + ' chunks into knowledge base', 'success');
+
+                        // Queued for background processing — poll status endpoint
+                        } else if (resp.ok && json && (json.status === 'queued' || json.status === 'accepted')) {
+                            meta.status = 'Queued';
+                            meta.server_doc_id = json.doc_id || json.id || null;
+                            // update staging item
+                            const idx = staging.findIndex(x => x.id === meta.id);
+                            if (idx !== -1) staging[idx] = meta;
+                            showTopAlert('File queued for processing', 'info');
+                            // start polling
+                            if (meta.server_doc_id) {
+                                pollDocumentStatus(meta.server_doc_id, meta.id);
+                            }
+
                         } else {
                             meta.status = 'Error';
                             let msg = 'Upload failed';
@@ -325,38 +342,81 @@
             })();
         }
 
-        // Test Query button handler
-        const testQueryBtn = document.getElementById('kb-test-query-btn');
-        if (testQueryBtn) testQueryBtn.addEventListener('click', async function () {
-            const q = prompt('Enter a test query to run against the knowledge base:');
-            if (!q) return;
-            const url = '{{ route('api.ai.chat') }}';
-            try {
-                const r = await fetch(url, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ question: q })
-                });
-                const j = await r.json();
-                const out = document.getElementById('kb-query-result');
-                if (!out) return;
-                if (!r.ok) {
-                    out.innerHTML = '<div class="alert alert-danger">Query failed: ' + (j.message || r.statusText) + '</div>';
-                    return;
+        // Poll the backend status endpoint for a server-side document id and update local state
+        function pollDocumentStatus(serverDocId, localMetaId, attempt = 0) {
+            const maxAttempts = 30; // ~2.5 minutes with 5s interval
+            const delayMs = 5000;
+            const statusUrl = '/api/ai/doc/' + encodeURIComponent(serverDocId) + '/status';
+
+            (async () => {
+                try {
+                    const r = await fetch(statusUrl, { method: 'GET', credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+                    if (!r.ok) {
+                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                        return;
+                    }
+
+                    const j = await r.json().catch(() => null);
+                    if (!j || j.status !== 'ok' || !j.doc) {
+                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                        return;
+                    }
+
+                    const doc = j.doc;
+                    // find local meta in staging
+                    const staging = loadStaging();
+                    const idx = staging.findIndex(x => x.id === localMetaId);
+                    const filesState = loadState();
+
+                    if (doc.status === 'Indexed') {
+                        if (idx !== -1) {
+                            const meta = staging[idx];
+                            meta.status = 'Indexed';
+                            meta.inserted = doc.inserted_count || 0;
+                            filesState.unshift(meta);
+                            // remove from staging and cleanup
+                            staging.splice(idx, 1);
+                            delete stagedFiles[localMetaId];
+                            saveState(filesState);
+                            saveStaging(staging);
+                            renderStaging();
+                            renderFileList();
+                            showTopAlert('Inserted ' + (meta.inserted || 0) + ' chunks into knowledge base', 'success');
+                        }
+                        return;
+                    }
+
+                    if (doc.status === 'Error') {
+                        if (idx !== -1) {
+                            staging[idx].status = 'Error';
+                            staging[idx].error = doc.error_message || '';
+                            saveStaging(staging);
+                            renderStaging();
+                            showTopAlert('Processing failed: ' + (doc.error_message || ''), 'danger');
+                        }
+                        return;
+                    }
+
+                    // still processing/queued -> retry
+                    if (attempt < maxAttempts) {
+                        setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                    } else {
+                        if (idx !== -1) {
+                            staging[idx].status = 'Error';
+                            staging[idx].error = 'Processing timed out';
+                            saveStaging(staging);
+                            renderStaging();
+                            showTopAlert('Processing timed out', 'warning');
+                        }
+                    }
+
+                } catch (e) {
+                    if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
                 }
+            })();
+        }
 
-                // display brief preview
-                const answer = j.answer || j.message || j.reply || '';
-                const source = j.source || '';
-                const steps = j.steps || [];
-                out.innerHTML = `<div class="well"><strong>Answer (source: ${escapeHtml(source)})</strong><div style="margin-top:8px">${escapeHtml(answer)}</div><div style="margin-top:8px;color:#666">Steps: ${steps.length}</div></div>`;
-
-            } catch (e) {
-                const out = document.getElementById('kb-query-result');
-                if (out) out.innerHTML = '<div class="alert alert-danger">Query error: ' + escapeHtml(e.message) + '</div>';
-            }
-        });
+        // Test Query button removed; UI no longer provides ad-hoc queries here.
 
         // table actions (catch clicks on any element with data-action)
         tbody.addEventListener('click', function(e) {
@@ -367,16 +427,44 @@
             if (action === 'delete') return handleDelete(id);
         });
 
-        function handleDelete(id) {
+        async function handleDelete(id) {
             if (!confirm('Delete this document?')) return;
-            const s = loadState();
-            const idx = s.findIndex(x => x.id === id);
+
+            // First, try to find a server-side doc id in stored state
+            const files = loadState();
+            const idx = files.findIndex(x => x.id === id);
+            const localIdx = idx;
+
+            // If there's no local entry, check staging
             if (idx === -1) {
                 showMessage('Not found', 'danger');
                 return;
             }
-            s.splice(idx, 1);
-            saveState(s);
+
+            const item = files[localIdx];
+            // if it was uploaded to the server, try server-side delete
+            if (item.server_doc_id) {
+                const url = '/api/ai/doc/' + encodeURIComponent(item.server_doc_id);
+                try {
+                    const tokenEl = document.querySelector('meta[name="csrf-token"]');
+                    const headers = { 'Accept': 'application/json' };
+                    if (tokenEl && tokenEl.content) headers['X-CSRF-TOKEN'] = tokenEl.content;
+
+                    const r = await fetch(url, { method: 'DELETE', credentials: 'same-origin', headers });
+                    if (!r.ok) {
+                        const j = await r.json().catch(() => null);
+                        showMessage('Server delete failed: ' + (j && (j.message || j.detail) ? (j.message || j.detail) : r.statusText), 'danger');
+                        return;
+                    }
+                } catch (e) {
+                    showMessage('Server delete error: ' + e.message, 'danger');
+                    return;
+                }
+            }
+
+            // remove locally
+            files.splice(localIdx, 1);
+            saveState(files);
             renderFileList();
             showMessage('Deleted', 'success');
         }

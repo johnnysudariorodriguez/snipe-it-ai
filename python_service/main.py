@@ -6,6 +6,7 @@ import os
 import time
 from typing import List, Optional
 from datetime import datetime
+import uuid
 from io import BytesIO
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -38,6 +39,8 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # =========================
 # CHROMA DB
 # =========================
+# ensure persist directory exists
+os.makedirs(PERSIST_DIR, exist_ok=True)
 try:
     chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
     collection = chroma_client.get_or_create_collection("documents")
@@ -120,6 +123,9 @@ def embed(texts: List[str]):
 async def add_doc(file: UploadFile = File(...)):
     start = time.time()
 
+    # generate a stable external id for this file upload
+    file_id = str(uuid.uuid4())
+
     text = extract_text(file).strip()
     if not text:
         raise HTTPException(status_code=400, detail="Empty document")
@@ -132,9 +138,10 @@ async def add_doc(file: UploadFile = File(...)):
     metas = []
 
     for i in range(len(chunks)):
-        ids.append(f"{file.filename}_{int(start)}_{i}")
+        ids.append(f"{file_id}_{i}")
         metas.append({
             "source": file.filename,
+            "file_id": file_id,
             "chunk": i,
             "created_at": datetime.utcnow().isoformat()
         })
@@ -145,10 +152,18 @@ async def add_doc(file: UploadFile = File(...)):
         embeddings=embeddings,
         metadatas=metas
     )
+    # attempt to persist if client supports it
+    try:
+        if hasattr(chroma_client, 'persist'):
+            chroma_client.persist()
+    except Exception:
+        # best-effort: don't fail the request if persisting isn't available
+        pass
 
     return {
         "status": "ok",
-        "file": file.filename,
+        "file": file_id,
+        "file_name": file.filename,
         "chunks": len(chunks),
         "time": round(time.time() - start, 2)
     }

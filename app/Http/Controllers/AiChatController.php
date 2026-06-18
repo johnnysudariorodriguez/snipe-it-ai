@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use App\Models\Asset;
 use App\Models\AiChatMessage;
+use App\Models\AiDocument;
 
 class AiChatController extends Controller
 {
@@ -75,6 +77,141 @@ RULES:
             'plan' => $plan,
             'tool_result' => $toolResult
         ]);
+    }
+
+    /**
+     * Accept a finalized file upload from the UI, send it to the Python vector service,
+     * and return the number of inserted chunks.
+     */
+    public function upload(Request $request)
+    {
+        if (! $request->user() || (! $request->user()->isAdmin() && ! $request->user()->isSuperUser())) {
+            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+        }
+
+        if (! $request->hasFile('file')) {
+            return response()->json(['status' => 'error', 'message' => 'No file provided'], 400);
+        }
+
+        $file = $request->file('file');
+        $ext = strtolower($file->getClientOriginalExtension() ?: '');
+        $allowed = ['pdf', 'docx', 'doc', 'txt'];
+        if (! in_array($ext, $allowed)) {
+            return response()->json(['status' => 'error', 'message' => 'Invalid file type'], 400);
+        }
+
+        $originalName = $file->getClientOriginalName();
+        $filename = time() . '_' . Str::slug(pathinfo($originalName, PATHINFO_FILENAME)) . '.' . $ext;
+        $path = $file->storeAs('ai_docs', $filename);
+
+        $doc = AiDocument::create([
+            'original_name' => $originalName,
+            'filename' => $filename,
+            'path' => $path,
+            'size' => $file->getSize(),
+            'status' => 'Queued',
+            'created_by' => $request->user()->id ?? null,
+        ]);
+
+        // Dispatch background job to process the document and insert into ChromaDB
+        try {
+            \App\Jobs\ProcessAiDocument::dispatch($doc->id);
+        } catch (\Throwable $e) {
+            $doc->status = 'Error';
+            $doc->error_message = 'Failed to queue processing: ' . $e->getMessage();
+            $doc->save();
+            return response()->json(['status' => 'error', 'message' => 'Failed to queue processing'], 500);
+        }
+
+        return response()->json(['status' => 'queued', 'doc_id' => $doc->id]);
+    }
+
+    /**
+     * Return document status and metadata for frontend polling.
+     */
+    public function documentStatus($id)
+    {
+        $doc = AiDocument::find($id);
+        if (! $doc) {
+            return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+        }
+
+        return response()->json([
+            'status' => 'ok',
+            'doc' => [
+                'id' => $doc->id,
+                'original_name' => $doc->original_name,
+                'status' => $doc->status,
+                'inserted_count' => $doc->inserted_count,
+                'error_message' => $doc->error_message,
+                'processed_at' => $doc->processed_at,
+            ]
+        ]);
+    }
+
+    /**
+     * Delete a document record and remove the stored file.
+     */
+    public function destroy($id)
+    {
+        $doc = AiDocument::find($id);
+        if (! $doc) {
+            return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
+        }
+
+        // attempt to delete file using configured filesystem
+        try {
+            $disk = config('filesystems.default', env('PRIVATE_FILESYSTEM_DISK', 'local'));
+            if ($doc->path && \Illuminate\Support\Facades\Storage::disk($disk)->exists($doc->path)) {
+                \Illuminate\Support\Facades\Storage::disk($disk)->delete($doc->path);
+            }
+        } catch (\Throwable $e) {
+            // non-fatal: continue to delete DB record but report partial failure
+            $doc->error_message = 'Failed to delete file: ' . $e->getMessage();
+            $doc->save();
+            return response()->json(['status' => 'error', 'message' => 'Failed to delete file'], 500);
+        }
+
+        $doc->delete();
+
+        return response()->json(['status' => 'ok', 'message' => 'Deleted']);
+    }
+
+    /**
+     * Simple chat endpoint that queries the Python service `/query` endpoint and
+     * returns a brief answer derived from the top result.
+     */
+    public function chat(Request $request)
+    {
+        $q = trim((string) $request->input('question', ''));
+        if ($q === '') {
+            return response()->json(['status' => 'error', 'message' => 'Empty question'], 400);
+        }
+
+        $pythonUrl = rtrim(env('PYTHON_API_URL', 'http://127.0.0.1:8001'), '/') . '/query';
+
+        try {
+            $res = Http::timeout(30)
+                ->post($pythonUrl, ['query' => $q, 'top_k' => 5]);
+
+            if (! $res->successful()) {
+                return response()->json(['status' => 'error', 'message' => 'Python service error', 'detail' => $res->body()], 500);
+            }
+
+            $json = $res->json();
+            $results = data_get($json, 'results', []);
+            $answer = '';
+            $source = '';
+            if (! empty($results) && isset($results[0]['text'])) {
+                $answer = $results[0]['text'];
+                $source = data_get($results[0], 'meta.source', '');
+            }
+
+            return response()->json(['status' => 'ok', 'answer' => $answer, 'source' => $source, 'results' => $results]);
+
+        } catch (\Throwable $e) {
+            return response()->json(['status' => 'error', 'message' => $e->getMessage()], 500);
+        }
     }
 
     /**

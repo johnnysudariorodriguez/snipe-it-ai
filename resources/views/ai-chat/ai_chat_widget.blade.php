@@ -925,7 +925,10 @@
         // Conversation endpoints
         var convListUrl = @json(route('ai-chat.conversations'));
         var convCreateUrl = @json(route('ai-chat.conversations.create'));
-        function convShowUrl(id) { return '/ai/conversations/' + id; }
+
+        function convShowUrl(id) {
+            return '/ai/conversations/' + id;
+        }
         var token = document.querySelector('meta[name="csrf-token"]');
         token = token ? token.getAttribute('content') : '';
 
@@ -1165,7 +1168,8 @@
                 muted.className = 'muted';
                 var last = convo.last_message || null;
                 if (last && last.content) {
-                    muted.textContent = (last.role === 'assistant' ? 'AI' : 'You') + ' · ' + new Date(last.created_at || convo.updated_at || Date.now()).toLocaleString();
+                    muted.textContent = (last.role === 'assistant' ? 'AI' : 'You') + ' · ' + new Date(last
+                        .created_at || convo.updated_at || Date.now()).toLocaleString();
                 } else {
                     muted.textContent = 'You · just now';
                 }
@@ -1195,7 +1199,13 @@
                     },
                     credentials: 'same-origin'
                 })
-                .then(function(r) { return r.json().catch(function(){return {conversations:[]};}); })
+                .then(function(r) {
+                    return r.json().catch(function() {
+                        return {
+                            conversations: []
+                        };
+                    });
+                })
                 .then(function(json) {
                     (json.conversations || []).forEach(function(c) {
                         messagesStore[c.id] = {
@@ -1245,7 +1255,9 @@
             // populate chat log (fetch from server if needed)
             if (!log) return;
             log.innerHTML = '';
-            var convo = messagesStore[id] || { messages: [] };
+            var convo = messagesStore[id] || {
+                messages: []
+            };
             if (!convo.messages || !convo.messages.length) {
                 // fetch history
                 fetch(convShowUrl(id), {
@@ -1256,12 +1268,26 @@
                         },
                         credentials: 'same-origin'
                     })
-                    .then(function(r) { return r.json().catch(function(){return {messages:[]};}); })
+                    .then(function(r) {
+                        return r.json().catch(function() {
+                            return {
+                                messages: []
+                            };
+                        });
+                    })
                     .then(function(json) {
                         var msgs = json.messages || [];
-                        convo.messages = msgs.map(function(m){ return {from: m.role === 'user' ? 'user' : 'ai', text: m.content, created_at: m.created_at}; });
+                        convo.messages = msgs.map(function(m) {
+                            return {
+                                from: m.role === 'user' ? 'user' : 'ai',
+                                text: m.content,
+                                created_at: m.created_at
+                            };
+                        });
                         messagesStore[id] = Object.assign(messagesStore[id] || {}, convo);
-                        convo.messages.forEach(function(m) { appendBubble(m.text, m.from === 'user' ? 'user' : 'ai'); });
+                        convo.messages.forEach(function(m) {
+                            appendBubble(m.text, m.from === 'user' ? 'user' : 'ai');
+                        });
                     })
                     .catch(function() {
                         // fallback: nothing to show
@@ -1598,7 +1624,9 @@
             var thinking = createThinkingBubble();
             sendBtn.disabled = true;
 
-            var payload = { message: msg };
+            var payload = {
+                message: msg
+            };
             if (currentConversationId && !String(currentConversationId).startsWith('new-')) {
                 payload.conversation_id = currentConversationId;
             }
@@ -1643,9 +1671,12 @@
                                 // If server returned a conversation id for a newly-created convo, move local store
                                 if (serverConvId) {
                                     // If current convo was a temporary new-* id, migrate it
-                                    if (currentConversationId && String(currentConversationId).startsWith('new-')) {
+                                    if (currentConversationId && String(currentConversationId)
+                                        .startsWith('new-')) {
                                         var tempKey = currentConversationId;
-                                        var tempData = messagesStore[tempKey] || { messages: [] };
+                                        var tempData = messagesStore[tempKey] || {
+                                            messages: []
+                                        };
                                         // remove temp
                                         delete messagesStore[tempKey];
                                         messagesStore[serverConvId] = tempData;
@@ -1657,24 +1688,54 @@
 
                                     // If server returned full messages list, use it to replace local history
                                     if (Array.isArray(x.j.messages)) {
-                                        messagesStore[currentConversationId].messages = x.j.messages.map(function(m) {
-                                            return { from: (m.role === 'user' ? 'user' : 'ai'), text: m.content, created_at: m.created_at };
-                                        });
+                                        messagesStore[currentConversationId].messages = x.j
+                                            .messages.map(function(m) {
+                                                return {
+                                                    from: (m.role === 'user' ? 'user' :
+                                                        'ai'),
+                                                    text: m.content,
+                                                    created_at: m.created_at
+                                                };
+                                            });
                                         // update meta info
-                                        messagesStore[currentConversationId].updated_at = (x.j.messages.length ? (x.j.messages[x.j.messages.length - 1].created_at || new Date().toISOString()) : new Date().toISOString());
-                                        messagesStore[currentConversationId].last_message = (x.j.messages.length ? x.j.messages[x.j.messages.length - 1] : null);
+                                        messagesStore[currentConversationId].updated_at = (x.j
+                                            .messages.length ? (x.j.messages[x.j.messages
+                                                    .length - 1].created_at || new Date()
+                                                .toISOString()) : new Date().toISOString());
+                                        messagesStore[currentConversationId].last_message = (x.j
+                                            .messages.length ? x.j.messages[x.j.messages
+                                                .length - 1] : null);
                                     } else {
                                         // append just the AI reply
-                                        messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText, created_at: new Date().toISOString() });
-                                        messagesStore[currentConversationId].updated_at = new Date().toISOString();
-                                        messagesStore[currentConversationId].last_message = { role: 'assistant', content: replyText, created_at: new Date().toISOString() };
+                                        messagesStore[currentConversationId].messages.push({
+                                            from: 'ai',
+                                            text: replyText,
+                                            created_at: new Date().toISOString()
+                                        });
+                                        messagesStore[currentConversationId].updated_at =
+                                            new Date().toISOString();
+                                        messagesStore[currentConversationId].last_message = {
+                                            role: 'assistant',
+                                            content: replyText,
+                                            created_at: new Date().toISOString()
+                                        };
                                     }
                                 } else {
                                     // No server id returned — append to current local conversation
-                                    if (currentConversationId && messagesStore[currentConversationId]) {
-                                        messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText, created_at: new Date().toISOString() });
-                                        messagesStore[currentConversationId].updated_at = new Date().toISOString();
-                                        messagesStore[currentConversationId].last_message = { role: 'assistant', content: replyText, created_at: new Date().toISOString() };
+                                    if (currentConversationId && messagesStore[
+                                            currentConversationId]) {
+                                        messagesStore[currentConversationId].messages.push({
+                                            from: 'ai',
+                                            text: replyText,
+                                            created_at: new Date().toISOString()
+                                        });
+                                        messagesStore[currentConversationId].updated_at =
+                                            new Date().toISOString();
+                                        messagesStore[currentConversationId].last_message = {
+                                            role: 'assistant',
+                                            content: replyText,
+                                            created_at: new Date().toISOString()
+                                        };
                                     }
                                 }
 

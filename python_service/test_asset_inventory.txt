@@ -1,0 +1,1 @@
+﻿AssetTag: SNIPE-MAC-001, Name: Executive MacBook Pro, Model: Apple M3 Max, Status: Deployed

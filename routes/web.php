@@ -47,6 +47,22 @@ Route::group(['middleware' => 'auth'], function () {
     // Backward compatible: also expose /ai/chat for API clients
     Route::post('ai/chat', [\App\Http\Controllers\ChatController::class, 'handle'])->middleware('throttle:ai-chat')->name('ai-chat.chat');
 
+    // AI RAG endpoints (moved from API routes): use session auth and CSRF
+    // Keep the same route names so blades using `route('api.ai.upload')` continue
+    // to resolve correctly.
+    Route::post('api/v1/ai/upload', [AiChatController::class, 'upload'])->name('api.ai.upload');
+    Route::get('api/v1/ai/doc/{id}/status', [AiChatController::class, 'documentStatus'])->name('api.ai.doc.status');
+    Route::post('api/v1/ai/chat', [AiChatController::class, 'chat'])->name('api.ai.chat');
+    Route::delete('api/v1/ai/doc/{id}', [AiChatController::class, 'destroy'])->name('api.ai.doc.delete');
+
+    // Backwards-compatible (legacy) routes without the /v1 prefix used by
+    // some frontend code paths. These mirror the /api/v1/ai/* routes and
+    // intentionally do not declare separate route names.
+    Route::post('api/ai/upload', [AiChatController::class, 'upload']);
+    Route::get('api/ai/doc/{id}/status', [AiChatController::class, 'documentStatus']);
+    Route::post('api/ai/chat', [AiChatController::class, 'chat']);
+    Route::delete('api/ai/doc/{id}', [AiChatController::class, 'destroy']);
+
     // AI Assistant UI (admin-facing)
     Route::get('ai-assistant', function () {
         return view('ai-chat.ai-assistant');
