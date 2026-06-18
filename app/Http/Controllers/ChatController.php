@@ -6,6 +6,8 @@ use Illuminate\Http\Request;
 use App\Models\Conversation;
 use App\Models\ChatMessage;
 use App\Services\OpenAIChatService;
+use App\Services\RagService;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 class ChatController extends Controller
@@ -62,7 +64,7 @@ class ChatController extends Controller
     }
 
     // Main chat endpoint: save user message, call OpenAI with history, save assistant reply
-    public function handle(Request $request, OpenAIChatService $openai)
+    public function handle(Request $request, OpenAIChatService $openai, RagService $rag)
     {
         $request->validate([
             'message' => 'required|string|max:8000',
@@ -97,6 +99,49 @@ class ChatController extends Controller
             ->get()
             ->reverse()
             ->values();
+
+        // KB-first RAG reasoning via RagService
+        try {
+            $historyArr = $history->map(function ($m) {
+                return ['role' => $m->role, 'content' => $m->content, 'meta' => $m->meta];
+            })->toArray();
+
+            $ragResp = $rag->answer($message, $historyArr, ['top_k' => 5]);
+            if (! empty($ragResp) && ! empty($ragResp['use_kb'])) {
+                $kbReply = $ragResp['reply'] ?? '';
+                $kbResults = $ragResp['kb_results'] ?? [];
+
+                $assistantMsg = ChatMessage::create([
+                    'conversation_id' => $conversation->id,
+                    'role' => 'assistant',
+                    'content' => $kbReply,
+                    'meta' => [
+                        'kb' => true,
+                        'kb_count' => count($kbResults),
+                    ],
+                ]);
+
+                $conversation->touch();
+
+                $messagesOut = ChatMessage::where('conversation_id', $conversation->id)
+                    ->orderBy('created_at', 'asc')
+                    ->limit(50)
+                    ->get()
+                    ->map(function ($m) {
+                        return ['id' => $m->id, 'role' => $m->role, 'content' => $m->content, 'meta' => $m->meta, 'created_at' => $m->created_at];
+                    });
+
+                return response()->json([
+                    'conversation_id' => $conversation->id,
+                    'reply' => $kbReply,
+                    'messages' => $messagesOut,
+                    'kb' => true,
+                    'kb_results' => $kbResults,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // gracefully fall back to LLM chat flow below
+        }
 
         // Build system prompt and messages for OpenAI
         $system = "You are a helpful AI assistant. RULES:\n- Do not hallucinate data.\n- Use only the provided context.\n- Be concise and conversational.";

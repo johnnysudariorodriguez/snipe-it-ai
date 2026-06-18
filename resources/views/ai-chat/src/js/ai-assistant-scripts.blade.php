@@ -270,7 +270,9 @@
                     try {
                         // include CSRF token from meta tag so Laravel will accept POST
                         const tokenEl = document.querySelector('meta[name="csrf-token"]');
-                        const headers = { 'Accept': 'application/json' };
+                        const headers = {
+                            'Accept': 'application/json'
+                        };
                         if (tokenEl && tokenEl.content) headers['X-CSRF-TOKEN'] = tokenEl.content;
 
                         const resp = await fetch(uploadUrl, {
@@ -297,10 +299,12 @@
                             // remove from staging
                             staging = staging.filter(x => x.id !== meta.id);
                             delete stagedFiles[meta.id];
-                            showTopAlert('Inserted ' + (json.inserted || 0) + ' chunks into knowledge base', 'success');
+                            showTopAlert('Inserted ' + (json.inserted || 0) +
+                                ' chunks into knowledge base', 'success');
 
-                        // Queued for background processing — poll status endpoint
-                        } else if (resp.ok && json && (json.status === 'queued' || json.status === 'accepted')) {
+                            // Queued for background processing — poll status endpoint
+                        } else if (resp.ok && json && (json.status === 'queued' || json.status ===
+                                'accepted')) {
                             meta.status = 'Queued';
                             meta.server_doc_id = json.doc_id || json.id || null;
                             // update staging item
@@ -315,7 +319,8 @@
                         } else {
                             meta.status = 'Error';
                             let msg = 'Upload failed';
-                            if (json && (json.detail || json.message)) msg = json.detail || json.message;
+                            if (json && (json.detail || json.message)) msg = json.detail || json
+                            .message;
                             else if (text) msg = text.substring(0, 300);
                             // update staging with error status so user can retry
                             const idx = staging.findIndex(x => x.id === meta.id);
@@ -350,15 +355,23 @@
 
             (async () => {
                 try {
-                    const r = await fetch(statusUrl, { method: 'GET', credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+                    const r = await fetch(statusUrl, {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    });
                     if (!r.ok) {
-                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId,
+                            localMetaId, attempt + 1), delayMs);
                         return;
                     }
 
                     const j = await r.json().catch(() => null);
                     if (!j || j.status !== 'ok' || !j.doc) {
-                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                        if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId,
+                            localMetaId, attempt + 1), delayMs);
                         return;
                     }
 
@@ -381,7 +394,8 @@
                             saveStaging(staging);
                             renderStaging();
                             renderFileList();
-                            showTopAlert('Inserted ' + (meta.inserted || 0) + ' chunks into knowledge base', 'success');
+                            showTopAlert('Inserted ' + (meta.inserted || 0) +
+                                ' chunks into knowledge base', 'success');
                         }
                         return;
                     }
@@ -399,7 +413,8 @@
 
                     // still processing/queued -> retry
                     if (attempt < maxAttempts) {
-                        setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                        setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1),
+                            delayMs);
                     } else {
                         if (idx !== -1) {
                             staging[idx].status = 'Error';
@@ -411,7 +426,8 @@
                     }
 
                 } catch (e) {
-                    if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId, localMetaId, attempt + 1), delayMs);
+                    if (attempt < maxAttempts) setTimeout(() => pollDocumentStatus(serverDocId,
+                        localMetaId, attempt + 1), delayMs);
                 }
             })();
         }
@@ -447,13 +463,20 @@
                 const url = '/api/ai/doc/' + encodeURIComponent(item.server_doc_id);
                 try {
                     const tokenEl = document.querySelector('meta[name="csrf-token"]');
-                    const headers = { 'Accept': 'application/json' };
+                    const headers = {
+                        'Accept': 'application/json'
+                    };
                     if (tokenEl && tokenEl.content) headers['X-CSRF-TOKEN'] = tokenEl.content;
 
-                    const r = await fetch(url, { method: 'DELETE', credentials: 'same-origin', headers });
+                    const r = await fetch(url, {
+                        method: 'DELETE',
+                        credentials: 'same-origin',
+                        headers
+                    });
                     if (!r.ok) {
                         const j = await r.json().catch(() => null);
-                        showMessage('Server delete failed: ' + (j && (j.message || j.detail) ? (j.message || j.detail) : r.statusText), 'danger');
+                        showMessage('Server delete failed: ' + (j && (j.message || j.detail) ? (j.message ||
+                            j.detail) : r.statusText), 'danger');
                         return;
                     }
                 } catch (e) {
