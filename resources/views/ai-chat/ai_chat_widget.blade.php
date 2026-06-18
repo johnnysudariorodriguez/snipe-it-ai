@@ -48,46 +48,22 @@
                             <div class="convo-name"><span id="snipe-ai-convo-name">Fin</span></div>
                             <div class="convo-time" id="snipe-ai-convo-time">Just now</div>
                         </div>
-                    if (x.ok && x.j.reply !== undefined) {
-                        var replyText = x.j.reply || '(empty)';
-                        // remove thinking indicator
-                        removeThinkingBubble(thinking);
+                    </div>
+                    <div class="convo-actions">
+                        {{-- <button type="button" id="snipe-ai-convo-toggle" class="snipe-ai-convo-toggle"
+                            aria-label="Minimize">
+                            <img src="/img/chatbot/minimize.png" alt="Minimize" class="snipe-ai-toggle-icon" />
+                        </button> --}}
+                        <button type="button" id="snipe-ai-convo-close" class="snipe-ai-chat-close" aria-label="Close">
+                            <img src="/img/chatbot/close.png" alt="Close" class="snipe-ai-icon" />
+                        </button>
+                    </div>
+                </div>
 
-                        var serverId = x.j.conversation_id || null;
-                        var messagesFromServer = x.j.messages || [];
-
-                        // convert server messages to local format
-                        var localMsgs = messagesFromServer.map(function(m) {
-                            return { from: (m.role === 'assistant' ? 'ai' : 'user'), text: m.content };
-                        });
-
-                        // if server returned an ID, reconcile temp convo ID
-                        if (serverId) {
-                            if (String(currentConversationId).startsWith('new-') && messagesStore[currentConversationId]) {
-                                delete messagesStore[currentConversationId];
-                            }
-                            messagesStore[String(serverId)] = {
-                                id: String(serverId),
-                                title: x.j.title || (messagesStore[currentConversationId] ? messagesStore[currentConversationId].title : ('Conversation ' + serverId)),
-                                updated_at: (x.j.meta && x.j.meta.updated_at) ? x.j.meta.updated_at : Date.now(),
-                                messages: localMsgs.length ? localMsgs : [{ from: 'ai', text: replyText }]
-                            };
-                            currentConversationId = String(serverId);
-                        } else {
-                            // fallback: append ai reply to existing conversation
-                            if (currentConversationId && messagesStore[currentConversationId]) {
-                                messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText });
-                                messagesStore[currentConversationId].updated_at = Date.now();
-                            }
-                        }
-
-                        // type AI reply, then store it (UI already updated via messagesStore)
-                        typeAndAppendAiReply(replyText, x.j.links || []).then(function() {
-                            sendBtn.disabled = false;
-                            // refresh convo list to reflect updated_at / snippets
-                            renderMessagesList();
-                        });
-                    } else {
+                <div id="snipe-ai-messages-list" class="snipe-ai-messages-list" aria-live="polite">
+                    {{-- Message history items will be rendered here. For testing, include one sample item. --}}
+                    <div class="snipe-ai-message-item" data-convo-id="sample-1" role="button" tabindex="0">
+                        <img src="/img/chatbot/bot.png" alt="Fin" class="snipe-ai-message-avatar" />
                         <div class="meta">
                             <div class="title">Rate your conversation</div>
                             <div class="muted">OpenAI · 1d ago</div>
@@ -950,7 +926,10 @@
 <script nonce="{{ csrf_token() }}">
     (function() {
         var endpoint = @json(filled(config('ai_chat.endpoint_override')) ? config('ai_chat.endpoint_override') : route('ai-chat.message'));
-        var convsEndpoint = @json(route('ai-chat.conversations')); // GET list, POST create
+        // Conversation endpoints
+        var convListUrl = @json(route('ai-chat.conversations'));
+        var convCreateUrl = @json(route('ai-chat.conversations.create'));
+        function convShowUrl(id) { return '/ai/conversations/' + id; }
         var token = document.querySelector('meta[name="csrf-token"]');
         token = token ? token.getAttribute('content') : '';
 
@@ -1149,59 +1128,27 @@
             });
         }
 
-        // messages store persisted in DB; keyed by conversation id
+        // messages store (will be loaded from server). Keep fallback empty store for offline/failure cases.
         var messagesStore = {};
-
-        // Fetch conversations from server and populate messagesStore
-        function fetchConversations() {
-            fetch(convsEndpoint, {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    credentials: 'same-origin'
-                })
-                .then(function(r) { return r.json().catch(function() { return {}; }); })
-                .then(function(j) {
-                    var convs = j.conversations || [];
-                    convs.forEach(function(c) {
-                        var id = String(c.id);
-                        var last = c.last_message || null;
-                        messagesStore[id] = {
-                            id: id,
-                            title: c.title || ('Conversation ' + id),
-                            updated_at: c.updated_at || Date.now(),
-                            messages: last ? [{ from: (last.role === 'assistant' ? 'ai' : 'user'), text: last.content }] : []
-                        };
-                    });
-                    renderMessagesList();
-                }).catch(function() {
-                    // ignore
-                });
-        }
 
         var currentConversationId = null;
 
         var messagesList = document.getElementById('snipe-ai-messages-list');
 
         function renderMessagesList() {
-            // keep the ask button at the end; rebuild list except ask wrapper
             if (!messagesList) return;
             var askWrap = messagesList.querySelector('.snipe-ai-ask-floating-wrap');
-            // clear existing items
             messagesList.innerHTML = '';
 
-            // convert store to array and sort by updated_at desc
-            var convs = Object.keys(messagesStore).map(function(id) { return messagesStore[id]; });
-            convs.sort(function(a, b) {
+            // sort conversations by updated_at desc
+            var convs = Object.values(messagesStore || {}).sort(function(a, b) {
                 var ta = a.updated_at ? new Date(a.updated_at).getTime() : 0;
                 var tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
                 return tb - ta;
             });
 
             convs.forEach(function(convo) {
-                var id = String(convo.id);
+                var id = convo.id;
                 var item = document.createElement('div');
                 item.className = 'snipe-ai-message-item';
                 item.setAttribute('data-convo-id', id);
@@ -1220,10 +1167,9 @@
                 title.textContent = convo.title || 'Conversation';
                 var muted = document.createElement('div');
                 muted.className = 'muted';
-                // show last message snippet if available
-                var last = (convo.messages && convo.messages.length) ? convo.messages[convo.messages.length - 1] : null;
-                if (last && last.text) {
-                    muted.textContent = (last.from === 'ai' ? 'AI: ' : 'You: ') + (String(last.text).slice(0, 60));
+                var last = convo.last_message || null;
+                if (last && last.content) {
+                    muted.textContent = (last.role === 'assistant' ? 'AI' : 'You') + ' · ' + new Date(last.created_at || convo.updated_at || Date.now()).toLocaleString();
                 } else {
                     muted.textContent = 'You · just now';
                 }
@@ -1240,8 +1186,36 @@
                 messagesList.appendChild(item);
             });
 
-            // re-add ask button wrapper
             if (askWrap) messagesList.appendChild(askWrap);
+        }
+
+        // Load conversations from server
+        function loadConversations() {
+            fetch(convListUrl, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    credentials: 'same-origin'
+                })
+                .then(function(r) { return r.json().catch(function(){return {conversations:[]};}); })
+                .then(function(json) {
+                    (json.conversations || []).forEach(function(c) {
+                        messagesStore[c.id] = {
+                            id: c.id,
+                            title: c.title || ('Conversation ' + c.id),
+                            updated_at: c.updated_at,
+                            last_message: c.last_message || null,
+                            messages: []
+                        };
+                    });
+                    renderMessagesList();
+                })
+                .catch(function() {
+                    // ignore – keep local store
+                    renderMessagesList();
+                });
         }
 
         function openConversation(id) {
@@ -1272,15 +1246,35 @@
                 if (timeEl) timeEl.textContent = new Date(messagesStore[id].updated_at).toLocaleString();
             }
 
-            // populate chat log
+            // populate chat log (fetch from server if needed)
             if (!log) return;
             log.innerHTML = '';
-            var convo = messagesStore[id] || {
-                messages: []
-            };
-            (convo.messages || []).forEach(function(m) {
-                appendBubble(m.text, m.from === 'user' ? 'user' : 'ai');
-            });
+            var convo = messagesStore[id] || { messages: [] };
+            if (!convo.messages || !convo.messages.length) {
+                // fetch history
+                fetch(convShowUrl(id), {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        credentials: 'same-origin'
+                    })
+                    .then(function(r) { return r.json().catch(function(){return {messages:[]};}); })
+                    .then(function(json) {
+                        var msgs = json.messages || [];
+                        convo.messages = msgs.map(function(m){ return {from: m.role === 'user' ? 'user' : 'ai', text: m.content, created_at: m.created_at}; });
+                        messagesStore[id] = Object.assign(messagesStore[id] || {}, convo);
+                        convo.messages.forEach(function(m) { appendBubble(m.text, m.from === 'user' ? 'user' : 'ai'); });
+                    })
+                    .catch(function() {
+                        // fallback: nothing to show
+                    });
+            } else {
+                (convo.messages || []).forEach(function(m) {
+                    appendBubble(m.text, m.from === 'user' ? 'user' : 'ai');
+                });
+            }
         }
 
         // floating ask button inside Messages tab: start a new conversation
@@ -1311,33 +1305,13 @@
                 var id = item.getAttribute('data-convo-id');
                 if (id) {
                     switchTab('chat');
-                    // fetch full conversation messages from server then open
-                    fetch(convsEndpoint + '/' + id, {
-                            method: 'GET',
-                            headers: {
-                                'Accept': 'application/json',
-                                'X-Requested-With': 'XMLHttpRequest'
-                            },
-                            credentials: 'same-origin'
-                        })
-                        .then(function(r) { return r.json().catch(function() { return {}; }); })
-                        .then(function(j) {
-                            var msgs = j.messages || [];
-                            var localMsgs = msgs.map(function(m) { return { from: (m.role === 'assistant' ? 'ai' : 'user'), text: m.content }; });
-                            messagesStore[id] = messagesStore[id] || { id: id, title: j.title || ('Conversation ' + id), updated_at: Date.now(), messages: [] };
-                            messagesStore[id].messages = localMsgs;
-                            messagesStore[id].title = j.title || messagesStore[id].title;
-                            openConversation(id);
-                        }).catch(function() {
-                            // fallback: open what's in memory
-                            openConversation(id);
-                        });
+                    openConversation(id);
                 }
             });
         }
 
-        // ensure messages list is rendered initially (load from server)
-        fetchConversations();
+        // load conversations and render
+        loadConversations();
 
         // Simple suggestion filtering
         if (searchInput && suggestions) {
@@ -1628,6 +1602,11 @@
             var thinking = createThinkingBubble();
             sendBtn.disabled = true;
 
+            var payload = { message: msg };
+            if (currentConversationId && !String(currentConversationId).startsWith('new-')) {
+                payload.conversation_id = currentConversationId;
+            }
+
             fetch(endpoint, {
                     method: 'POST',
                     headers: {
@@ -1637,9 +1616,7 @@
                         'X-Requested-With': 'XMLHttpRequest'
                     },
                     credentials: 'same-origin',
-                    body: JSON.stringify({
-                        message: msg
-                    })
+                    body: JSON.stringify(payload)
                 })
                 .then(function(r) {
                     return r.json().then(function(j) {
@@ -1662,14 +1639,56 @@
                         // remove thinking indicator
                         removeThinkingBubble(thinking);
 
-                        // type AI reply, then store it
+                        // type AI reply, then store it and reconcile server state
                         typeAndAppendAiReply(replyText, x.j.links || []).then(function() {
-                            if (currentConversationId && messagesStore[currentConversationId]) {
-                                messagesStore[currentConversationId].messages.push({
-                                    from: 'ai',
-                                    text: replyText
-                                });
+                            try {
+                                var serverConvId = x.j.conversation_id || null;
+
+                                // If server returned a conversation id for a newly-created convo, move local store
+                                if (serverConvId) {
+                                    // If current convo was a temporary new-* id, migrate it
+                                    if (currentConversationId && String(currentConversationId).startsWith('new-')) {
+                                        var tempKey = currentConversationId;
+                                        var tempData = messagesStore[tempKey] || { messages: [] };
+                                        // remove temp
+                                        delete messagesStore[tempKey];
+                                        messagesStore[serverConvId] = tempData;
+                                        messagesStore[serverConvId].id = serverConvId;
+                                        currentConversationId = serverConvId;
+                                    } else if (!currentConversationId) {
+                                        currentConversationId = serverConvId;
+                                    }
+
+                                    // If server returned full messages list, use it to replace local history
+                                    if (Array.isArray(x.j.messages)) {
+                                        messagesStore[currentConversationId].messages = x.j.messages.map(function(m) {
+                                            return { from: (m.role === 'user' ? 'user' : 'ai'), text: m.content, created_at: m.created_at };
+                                        });
+                                        // update meta info
+                                        messagesStore[currentConversationId].updated_at = (x.j.messages.length ? (x.j.messages[x.j.messages.length - 1].created_at || new Date().toISOString()) : new Date().toISOString());
+                                        messagesStore[currentConversationId].last_message = (x.j.messages.length ? x.j.messages[x.j.messages.length - 1] : null);
+                                    } else {
+                                        // append just the AI reply
+                                        messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText, created_at: new Date().toISOString() });
+                                        messagesStore[currentConversationId].updated_at = new Date().toISOString();
+                                        messagesStore[currentConversationId].last_message = { role: 'assistant', content: replyText, created_at: new Date().toISOString() };
+                                    }
+                                } else {
+                                    // No server id returned — append to current local conversation
+                                    if (currentConversationId && messagesStore[currentConversationId]) {
+                                        messagesStore[currentConversationId].messages.push({ from: 'ai', text: replyText, created_at: new Date().toISOString() });
+                                        messagesStore[currentConversationId].updated_at = new Date().toISOString();
+                                        messagesStore[currentConversationId].last_message = { role: 'assistant', content: replyText, created_at: new Date().toISOString() };
+                                    }
+                                }
+
+                                // Re-render conversation list so ordering/last message updates
+                                renderMessagesList();
+                            } catch (e) {
+                                // ignore reconciliation errors but ensure UI stays responsive
+                                console.error(e);
                             }
+
                             sendBtn.disabled = false;
                         });
                     } else {
