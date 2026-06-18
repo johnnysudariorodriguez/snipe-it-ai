@@ -889,15 +889,34 @@
         transition: opacity .18s ease, transform .18s ease;
     }
 
-    .snipe-ai-chat-bubble.typing.fade-in { opacity: 1; transform: translateY(0); }
+    .snipe-ai-chat-bubble.typing.fade-in {
+        opacity: 1;
+        transform: translateY(0);
+    }
 
-    .typing-cursor { display: inline-block; margin-left: 6px; opacity: 0.9; animation: typing-blink 1s step-start infinite; }
+    .typing-cursor {
+        display: inline-block;
+        margin-left: 6px;
+        opacity: 0.9;
+        animation: typing-blink 1s step-start infinite;
+    }
 
-    @keyframes typing-blink { 50% { opacity: 0; } }
+    @keyframes typing-blink {
+        50% {
+            opacity: 0;
+        }
+    }
 
-    .snipe-ai-chat-bubble.thinking { font-style: italic; color: #666; opacity: 0.95; }
-    .thinking-dots { margin-left: 6px; font-weight: 700; }
+    .snipe-ai-chat-bubble.thinking {
+        font-style: italic;
+        color: #666;
+        opacity: 0.95;
+    }
 
+    .thinking-dots {
+        margin-left: 6px;
+        font-weight: 700;
+    }
 </style>
 
 <script nonce="{{ csrf_token() }}">
@@ -1382,7 +1401,11 @@
             d.appendChild(dots);
             log.appendChild(d);
             log.scrollTop = log.scrollHeight;
-            var state = { el: d, dots: dots, interval: null };
+            var state = {
+                el: d,
+                dots: dots,
+                interval: null
+            };
             var counter = 0;
             state.interval = setInterval(function() {
                 counter = (counter + 1) % 4;
@@ -1429,7 +1452,8 @@
                     if (i >= text.length) {
                         clearInterval(timer);
                         setTimeout(function() {
-                            if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
+                            if (cursor && cursor.parentNode) cursor.parentNode.removeChild(
+                                cursor);
                             if (links && links.length) {
                                 var wrap = document.createElement('div');
                                 wrap.className = 'snipe-ai-chat-links';
@@ -1574,8 +1598,10 @@
                         });
                     } else {
                         removeThinkingBubble(thinking);
-                        var errLine = (x.j && (x.j.error || x.j.message)) ? (x.j.error || x.j.message) : '';
-                        appendBubble(errLine || ('Request failed (HTTP ' + (x.status || '?') + ')'), 'err');
+                        var errLine = (x.j && (x.j.error || x.j.message)) ? (x.j.error || x.j.message) :
+                            '';
+                        appendBubble(errLine || ('Request failed (HTTP ' + (x.status || '?') + ')'),
+                            'err');
                         sendBtn.disabled = false;
                     }
                 })
@@ -1583,8 +1609,7 @@
                     removeThinkingBubble(thinking);
                     appendBubble('Network error', 'err');
                     sendBtn.disabled = false;
-                })
-            ;
+                });
         });
     })();
 </script>

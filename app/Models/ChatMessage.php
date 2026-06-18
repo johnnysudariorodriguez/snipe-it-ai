@@ -15,6 +15,11 @@ class ChatMessage extends Model
         'conversation_id',
         'role',
         'content',
+        'meta',
+    ];
+
+    protected $casts = [
+        'meta' => 'array',
     ];
 
     public function conversation()

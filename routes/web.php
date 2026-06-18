@@ -40,6 +40,13 @@ Route::group(['middleware' => 'auth'], function () {
         ->middleware('throttle:ai-chat')
         ->name('ai-chat.message');
 
+    // Conversation APIs
+    Route::get('ai/conversations', [\App\Http\Controllers\ChatController::class, 'index'])->name('ai-chat.conversations');
+    Route::post('ai/conversations', [\App\Http\Controllers\ChatController::class, 'store'])->name('ai-chat.conversations.create');
+    Route::get('ai/conversations/{id}', [\App\Http\Controllers\ChatController::class, 'show'])->name('ai-chat.conversations.show');
+    // Backward compatible: also expose /ai/chat for API clients
+    Route::post('ai/chat', [\App\Http\Controllers\ChatController::class, 'handle'])->middleware('throttle:ai-chat')->name('ai-chat.chat');
+
     // AI Assistant UI (admin-facing)
     Route::get('ai-assistant', function () {
         return view('ai-chat.ai-assistant');
