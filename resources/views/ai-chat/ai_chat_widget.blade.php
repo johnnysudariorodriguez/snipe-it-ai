@@ -936,6 +936,52 @@
         margin-left: 6px;
         font-weight: 700;
     }
+
+    /* Empty-state UI for no conversations / no messages */
+    .snipe-ai-no-result {
+        padding: 2.25rem 1rem;
+        text-align: center;
+        color: #6b7280;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        height: 100%;
+        width: 100%;
+        min-height: 10rem;
+        box-sizing: border-box;
+    }
+
+    .snipe-ai-no-result svg {
+        width: 110px;
+        height: 110px;
+        margin-bottom: 1rem;
+        opacity: .95;
+    }
+
+    .snipe-ai-no-result h5 {
+        margin-bottom: .5rem;
+        font-weight: 600;
+    }
+
+    .snipe-ai-no-result .text-muted {
+        color: #999;
+    }
+    /* Center empty-state inside the chat tab area */
+    #snipe-ai-tab-chat .snipe-ai-no-result {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: auto;
+        max-width: calc(100% - 2rem);
+        padding: 1rem;
+        box-sizing: border-box;
+        min-height: 0;
+        height: auto;
+        text-align: center;
+        z-index: 10;
+    }
 </style>
 
 <script nonce="{{ csrf_token() }}">
@@ -1133,7 +1179,12 @@
                     id: id,
                     title: 'New conversation',
                     updated_at: Date.now(),
-                    messages: []
+                    messages: [{
+                        from: 'ai',
+                        text: 'Welcome! How can I help you today?',
+                        meta: null,
+                        created_at: Date.now()
+                    }]
                 };
                 switchTab('chat');
                 setOpen(true);
@@ -1164,6 +1215,23 @@
                 var tb = b.updated_at ? new Date(b.updated_at).getTime() : 0;
                 return tb - ta;
             });
+
+            // If there are no conversations, show an empty-state UI
+            if (!convs || convs.length === 0) {
+                var noEl = document.createElement('div');
+                noEl.className = 'snipe-ai-no-result';
+                noEl.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="10.5" cy="10.5" r="7.5" stroke="#ffc107" stroke-width="3"/>
+                        <line x1="15.5" y1="15.5" x2="21" y2="21" stroke="#6c757d" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
+                    <h5 class="mb-1">No conversations yet</h5>
+                    <p class="text-muted mb-0">Start a new conversation by clicking "Ask a question".</p>
+                `;
+                messagesList.appendChild(noEl);
+                if (askWrap) messagesList.appendChild(askWrap);
+                return;
+            }
 
             convs.forEach(function(convo) {
                 var id = convo.id;
@@ -1313,10 +1381,24 @@
                             };
                         });
                         messagesStore[id] = Object.assign(messagesStore[id] || {}, convo);
-                        convo.messages.forEach(function(m) {
-                            appendBubbleWithMeta(m.text, m.from === 'user' ? 'user' : 'ai', m.meta ||
-                                null);
-                        });
+                        if (!convo.messages || convo.messages.length === 0) {
+                            var noMsg = document.createElement('div');
+                            noMsg.className = 'snipe-ai-no-result';
+                            noMsg.innerHTML = `
+                                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                    <circle cx="10.5" cy="10.5" r="7.5" stroke="#ffc107" stroke-width="3"/>
+                                    <line x1="15.5" y1="15.5" x2="21" y2="21" stroke="#6c757d" stroke-width="3" stroke-linecap="round"/>
+                                </svg>
+                                <h5 class="mb-1">No messages yet</h5>
+                                <p class="text-muted mb-0">Welcome! How can I help you today?</p>
+                            `;
+                            log.appendChild(noMsg);
+                        } else {
+                            convo.messages.forEach(function(m) {
+                                appendBubbleWithMeta(m.text, m.from === 'user' ? 'user' : 'ai', m
+                                    .meta || null);
+                            });
+                        }
                     })
                     .catch(function() {
                         // fallback: nothing to show
@@ -1338,7 +1420,12 @@
                     id: id,
                     title: 'New conversation',
                     updated_at: Date.now(),
-                    messages: []
+                    messages: [{
+                        from: 'ai',
+                        text: 'Welcome! How can I help you today?',
+                        meta: null,
+                        created_at: Date.now()
+                    }]
                 };
                 switchTab('chat');
                 setOpen(true);
@@ -1479,6 +1566,14 @@
         });
 
         function appendBubble(text, cls) {
+            // remove any no-result placeholders
+            try {
+                var existing = log.querySelectorAll('.snipe-ai-no-result');
+                existing.forEach(function(el) {
+                    if (el && el.parentNode) el.parentNode.removeChild(el);
+                });
+            } catch (e) {}
+
             var d = document.createElement('div');
             d.className = 'snipe-ai-chat-bubble ' + cls;
             d.textContent = text;
@@ -1488,6 +1583,14 @@
 
         // Append a saved message and render inline sources from message meta when present.
         function appendBubbleWithMeta(text, cls, meta) {
+            // remove any no-result placeholders
+            try {
+                var existing = log.querySelectorAll('.snipe-ai-no-result');
+                existing.forEach(function(el) {
+                    if (el && el.parentNode) el.parentNode.removeChild(el);
+                });
+            } catch (e) {}
+
             var d = document.createElement('div');
             d.className = 'snipe-ai-chat-bubble ' + cls;
 
