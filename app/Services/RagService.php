@@ -66,7 +66,40 @@ class RagService
         }
 
         // No KB answer found after self-correction
-        return ['use_kb' => false];
+        // Build closest matches list (top N) with simple reasons derived from vector distance
+        $candidates = $aggResults ?: $initial;
+        $closest = [];
+
+        if (! empty($candidates)) {
+            // sort by distance when available (ascending)
+            usort($candidates, function ($a, $b) {
+                $da = isset($a['distance']) ? (float) $a['distance'] : INF;
+                $db = isset($b['distance']) ? (float) $b['distance'] : INF;
+                if ($da === $db) return 0;
+                return ($da < $db) ? -1 : 1;
+            });
+
+            $count = 0;
+            foreach ($candidates as $chunk) {
+                if ($count >= 5) break;
+                $source = data_get($chunk, 'meta.source', data_get($chunk, 'meta.file_id', 'unknown'));
+                $distance = isset($chunk['distance']) ? (float) $chunk['distance'] : null;
+
+                // Return only source and distance for closest matches (no excerpts or explanations)
+                $closest[] = [
+                    'source' => (string) $source,
+                    'distance' => $distance,
+                ];
+
+                $count++;
+            }
+        }
+
+        return [
+            'use_kb' => false,
+            'closest_matches' => $closest,
+            'searched' => 'knowledge base',
+        ];
     }
 
     protected function needsKb(string $question, array $history = []): bool

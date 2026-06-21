@@ -107,17 +107,80 @@ class ChatController extends Controller
             })->toArray();
 
             $ragResp = $rag->answer($message, $historyArr, ['top_k' => 5]);
-            if (! empty($ragResp) && ! empty($ragResp['use_kb'])) {
-                $kbReply = $ragResp['reply'] ?? '';
-                $kbResults = $ragResp['kb_results'] ?? [];
+
+            // If KB produced any results, ALWAYS use them to produce the answer.
+            $kbResults = $ragResp['kb_results'] ?? [];
+            if (! empty($kbResults)) {
+                // Prefer the reply returned by the RAG pipeline, but ensure we never fall back
+                // to a generic "I don't know" when kb_results exist. If the RAG reply is
+                // empty or unhelpful, synthesize a KB-only answer using the OpenAI service.
+                $kbReply = trim((string) ($ragResp['reply'] ?? ''));
+
+                // If the reply is empty or clearly a refusal, synthesize from the KB chunks
+                if ($kbReply === '' || stripos($kbReply, "i don't know") !== false || stripos($kbReply, 'i do not know') !== false) {
+                    // Build compact context from top chunks (up to 6)
+                    $top = array_slice($kbResults, 0, 6);
+                    $ctxParts = [];
+                    foreach ($top as $i => $c) {
+                        $idx = $i + 1;
+                        $src = data_get($c, 'meta.source', data_get($c, 'meta.file_id', 'unknown'));
+                        $text = trim(str_replace("\n\n", " \n ", mb_substr($c['text'] ?? '', 0, 4000)));
+                        $ctxParts[] = "[Context #{$idx}] Source: {$src}\n{$text}";
+                    }
+                    $context = implode("\n\n---\n\n", $ctxParts);
+
+                    $system = "You are a helpful assistant. Use ONLY the facts provided in the CONTEXT sections below to answer the user's question. Do NOT make assumptions or add external information. If the answer cannot be derived from the context, respond exactly with 'I don't know'. Provide a concise answer that uses only the context.";
+
+                    $userPrompt = "CONTEXT:\n{$context}\n\nQuestion: {$message}\n\nAnswer using only the context. Provide a concise answer without extra commentary.";
+
+                    $resp2 = $openai->chat([
+                        ['role' => 'system', 'content' => $system],
+                        ['role' => 'user', 'content' => $userPrompt]
+                    ], ['temperature' => 0.0, 'max_tokens' => 600]);
+
+                    $kbReply = trim((string) data_get($resp2, 'reply', ''));
+
+                    // If still empty or an "I don't know" after synthesis, produce a conservative
+                    // extractive summary from the top chunks (deterministic fallback) so we never
+                    // return a generic refusal when results exist.
+                    if ($kbReply === '' || stripos($kbReply, "i don't know") !== false || stripos($kbReply, 'i do not know') !== false) {
+                        $snips = [];
+                        foreach (array_slice($kbResults, 0, 5) as $c) {
+                            $src = data_get($c, 'meta.source', data_get($c, 'meta.file_id', 'unknown'));
+                            $text = trim(mb_substr($c['text'] ?? '', 0, 300));
+                            $snips[] = "{$src}: {$text}";
+                        }
+                        $kbReply = implode("\n\n", $snips);
+                    }
+                }
+
+                // Collect up to 5 unique source names from the kb results
+                $sources = [];
+                foreach ($kbResults as $c) {
+                    $src = data_get($c, 'meta.source', data_get($c, 'meta.file_id', 'unknown'));
+                    if ($src && ! in_array($src, $sources, true)) {
+                        $sources[] = (string) $src;
+                    }
+                    if (count($sources) >= 5) break;
+                }
+
+                // Append Source list below the assistant reply (user-facing)
+                $kbReplyWithSources = $kbReply;
+                if (! empty($sources)) {
+                    $kbReplyWithSources .= "\n\nSource:\n";
+                    foreach ($sources as $s) {
+                        $kbReplyWithSources .= "- " . $s . "\n";
+                    }
+                }
 
                 $assistantMsg = ChatMessage::create([
                     'conversation_id' => $conversation->id,
                     'role' => 'assistant',
-                    'content' => $kbReply,
+                    'content' => $kbReplyWithSources,
                     'meta' => [
                         'kb' => true,
                         'kb_count' => count($kbResults),
+                        'sources' => $sources,
                     ],
                 ]);
 
@@ -133,65 +196,132 @@ class ChatController extends Controller
 
                 return response()->json([
                     'conversation_id' => $conversation->id,
-                    'reply' => $kbReply,
+                    'reply' => $kbReplyWithSources,
                     'messages' => $messagesOut,
                     'kb' => true,
                     'kb_results' => $kbResults,
+                    'sources' => $sources,
                 ]);
             }
+
+            // No KB answer — build a more natural (non-static) NO-MATCH response
+            $closest = $ragResp['closest_matches'] ?? [];
+
+            $intros = [
+                "I couldn't find a matching result.",
+                "I couldn't locate an exact match in the knowledge base.",
+                "No exact match was found in the knowledge base.",
+                "I didn't find a direct match in the knowledge base.",
+            ];
+
+            $explanations = [
+                "This may be because the item isn't indexed yet, the index is incomplete, or the query was very specific.",
+                "Possible reasons: the information hasn't been indexed, or the query didn't match available documents.",
+                "It appears the requested information isn't present in the indexed documents or the search was too narrow.",
+            ];
+
+            $nextSteps = [
+                "Try providing additional details, alternate terms, or upload related documents.",
+                "You can broaden the query, provide different keywords, or upload relevant files.",
+                "If you have a specific document or keyword, tell me and I can search for it.",
+            ];
+
+            try {
+                $intro = $intros[random_int(0, count($intros) - 1)];
+                $explanation = $explanations[random_int(0, count($explanations) - 1)];
+                $next = $nextSteps[random_int(0, count($nextSteps) - 1)];
+            } catch (\Throwable $e) {
+                // fallback deterministic choice
+                $intro = $intros[0];
+                $explanation = $explanations[0];
+                $next = $nextSteps[0];
+            }
+
+            $parts = [];
+            $parts[] = $intro;
+            $parts[] = "Explanation:\n" . $explanation;
+            $parts[] = "Scope searched:\n- knowledge base";
+            $parts[] = "Clarification:\nThis does NOT mean the item does not exist; it only means it was not present in the retrieved knowledge base.";
+
+            if (! empty($closest)) {
+                $cm = "Closest Matches:\n";
+                foreach ($closest as $i => $c) {
+                    $idx = $i + 1;
+                    $src = $c['source'] ?? 'unknown';
+                    $cm .= "- Match {$idx}: Source: {$src}\n";
+                }
+                $parts[] = $cm;
+            } else {
+                $parts[] = "Closest Matches: none found.";
+            }
+
+            $parts[] = "Next Steps:\n- " . $next;
+            $reply = implode("\n\n", $parts);
+
+            $assistantMsg = ChatMessage::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $reply,
+                'meta' => [
+                    'kb' => false,
+                    'closest_matches_count' => count($closest),
+                ],
+            ]);
+
+            $conversation->touch();
+
+            $messagesOut = ChatMessage::where('conversation_id', $conversation->id)
+                ->orderBy('created_at', 'asc')
+                ->limit(50)
+                ->get()
+                ->map(function ($m) {
+                    return ['id' => $m->id, 'role' => $m->role, 'content' => $m->content, 'meta' => $m->meta, 'created_at' => $m->created_at];
+                });
+
+            return response()->json([
+                'conversation_id' => $conversation->id,
+                'reply' => $reply,
+                'messages' => $messagesOut,
+                'kb' => false,
+                'closest_matches' => $closest,
+            ]);
+
         } catch (\Throwable $e) {
-            // gracefully fall back to LLM chat flow below
+            // Retrieval error — return NO MATCH structured fallback
+            $parts = [];
+            $parts[] = "I couldn't find a matching result.";
+            $parts[] = "Explanation:\nThe retrieval service encountered an error while searching the knowledge base. Please try again later or refine your query.";
+            $parts[] = "Scope searched:\n- knowledge base";
+            $parts[] = "Clarification:\nThis does NOT mean the item does not exist; it only means it could not be retrieved at this time.";
+            $parts[] = "Next Steps:\n- Try again later\n- Provide more specific search terms\n- Upload or index relevant documents if available";
+            $reply = implode("\n\n", $parts);
+
+            $assistantMsg = ChatMessage::create([
+                'conversation_id' => $conversation->id,
+                'role' => 'assistant',
+                'content' => $reply,
+                'meta' => [
+                    'kb' => false,
+                    'error' => substr($e->getMessage(), 0, 400)
+                ],
+            ]);
+
+            $conversation->touch();
+
+            $messagesOut = ChatMessage::where('conversation_id', $conversation->id)
+                ->orderBy('created_at', 'asc')
+                ->limit(50)
+                ->get()
+                ->map(function ($m) {
+                    return ['id' => $m->id, 'role' => $m->role, 'content' => $m->content, 'meta' => $m->meta, 'created_at' => $m->created_at];
+                });
+
+            return response()->json([
+                'conversation_id' => $conversation->id,
+                'reply' => $reply,
+                'messages' => $messagesOut,
+                'kb' => false,
+            ]);
         }
-
-        // Build system prompt and messages for OpenAI
-        $system = "You are a helpful AI assistant. RULES:\n- Do not hallucinate data.\n- Use only the provided context.\n- Be concise and conversational.";
-
-        $messages = [ ['role' => 'system', 'content' => $system] ];
-
-        foreach ($history as $m) {
-            $messages[] = ['role' => $m->role, 'content' => $m->content];
-        }
-
-        // Call OpenAI
-        $resp = $openai->chat($messages, ['temperature' => 0.2, 'max_tokens' => 600]);
-
-        if (isset($resp['error'])) {
-            return response()->json(['error' => $resp['error']], 502);
-        }
-
-        $reply = trim((string) data_get($resp, 'reply', ''));
-
-        // Save assistant response
-        $assistantMsg = ChatMessage::create([
-            'conversation_id' => $conversation->id,
-            'role' => 'assistant',
-            'content' => $reply,
-            'meta' => [
-                'tokens' => (int) data_get($resp, 'tokens', 0),
-                'model' => data_get($resp, 'model', ''),
-            ],
-        ]);
-
-        // Update conversation timestamp
-        $conversation->touch();
-
-        // Return structured response
-        $messagesOut = ChatMessage::where('conversation_id', $conversation->id)
-            ->orderBy('created_at', 'asc')
-            ->limit(50)
-            ->get()
-            ->map(function ($m) {
-                return ['id' => $m->id, 'role' => $m->role, 'content' => $m->content, 'meta' => $m->meta, 'created_at' => $m->created_at];
-            });
-
-        return response()->json([
-            'conversation_id' => $conversation->id,
-            'reply' => $reply,
-            'messages' => $messagesOut,
-            'meta' => [
-                'tokens' => (int) data_get($resp, 'tokens', 0),
-                'model' => data_get($resp, 'model', ''),
-            ],
-        ]);
     }
 }

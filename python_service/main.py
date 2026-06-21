@@ -24,6 +24,10 @@ from PyPDF2 import PdfReader
 # ENV
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    OPENAI_API_KEY = OPENAI_API_KEY.strip().strip('"').strip("'")
+    OPENAI_API_KEY = OPENAI_API_KEY.lstrip('= ')
+
 PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
 
 

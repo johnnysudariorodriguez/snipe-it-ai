@@ -414,6 +414,25 @@
         text-decoration: underline;
     }
 
+    /* Sources list styling (inside AI bubble) */
+    .snipe-ai-sources-sep {
+        color: #9ca3af;
+        font-size: 12px;
+        margin-top: 8px;
+        margin-bottom: 6px;
+    }
+
+    .snipe-ai-sources-list {
+        margin: 0 0 0 18px;
+        padding: 0;
+        color: #6b7280;
+        font-size: 13px;
+    }
+
+    .snipe-ai-sources-list li {
+        margin: 2px 0;
+    }
+
     .snipe-ai-chat-form {
         padding: .4rem .75rem .6rem .75rem;
         border-top: 1px solid rgba(0, 0, 0, .06);
@@ -1278,15 +1297,25 @@
                     .then(function(json) {
                         var msgs = json.messages || [];
                         convo.messages = msgs.map(function(m) {
+                            var content = m.content || '';
+                            try {
+                                // remove any server-appended Source block from stored content
+                                content = String(content).replace(/[\r\n]+\s*Source[s]?:[\s\S]*$/i, '')
+                                    .trim();
+                            } catch (e) {
+                                // ignore
+                            }
                             return {
                                 from: m.role === 'user' ? 'user' : 'ai',
-                                text: m.content,
+                                text: content,
+                                meta: m.meta || null,
                                 created_at: m.created_at
                             };
                         });
                         messagesStore[id] = Object.assign(messagesStore[id] || {}, convo);
                         convo.messages.forEach(function(m) {
-                            appendBubble(m.text, m.from === 'user' ? 'user' : 'ai');
+                            appendBubbleWithMeta(m.text, m.from === 'user' ? 'user' : 'ai', m.meta ||
+                                null);
                         });
                     })
                     .catch(function() {
@@ -1294,7 +1323,7 @@
                     });
             } else {
                 (convo.messages || []).forEach(function(m) {
-                    appendBubble(m.text, m.from === 'user' ? 'user' : 'ai');
+                    appendBubbleWithMeta(m.text, m.from === 'user' ? 'user' : 'ai', m.meta || null);
                 });
             }
         }
@@ -1457,6 +1486,42 @@
             log.scrollTop = log.scrollHeight;
         }
 
+        // Append a saved message and render inline sources from message meta when present.
+        function appendBubbleWithMeta(text, cls, meta) {
+            var d = document.createElement('div');
+            d.className = 'snipe-ai-chat-bubble ' + cls;
+
+            var p = document.createElement('div');
+            p.className = 'snipe-ai-bubble-content';
+            p.textContent = (text === null || text === undefined) ? '' : text;
+            d.appendChild(p);
+
+            try {
+                var sources = (meta && meta.sources) ? meta.sources : (meta && meta.kb && meta.sources ? meta
+                    .sources : null);
+                if (Array.isArray(sources) && sources.length) {
+                    var sep = document.createElement('div');
+                    sep.className = 'snipe-ai-sources-sep';
+                    sep.textContent = '-------';
+                    d.appendChild(sep);
+
+                    var ol = document.createElement('ol');
+                    ol.className = 'snipe-ai-sources-list';
+                    sources.forEach(function(s) {
+                        var li = document.createElement('li');
+                        li.textContent = s || 'unknown';
+                        ol.appendChild(li);
+                    });
+                    d.appendChild(ol);
+                }
+            } catch (e) {
+                // ignore non-fatal render errors
+            }
+
+            log.appendChild(d);
+            log.scrollTop = log.scrollHeight;
+        }
+
         // Thinking + typing helpers
         var __thinkingState = null;
 
@@ -1501,7 +1566,7 @@
             }
         }
 
-        function typeAndAppendAiReply(text, links) {
+        function typeAndAppendAiReply(text, links, sources) {
             return new Promise(function(resolve) {
                 if (!log) return resolve();
                 var d = document.createElement('div');
@@ -1526,7 +1591,23 @@
                         setTimeout(function() {
                             if (cursor && cursor.parentNode) cursor.parentNode.removeChild(
                                 cursor);
-                            if (links && links.length) {
+
+                            // If sources are provided, render them inside the AI bubble and skip links to avoid redundancy.
+                            if (sources && sources.length) {
+                                var sep = document.createElement('div');
+                                sep.className = 'snipe-ai-sources-sep';
+                                sep.textContent = '-------';
+                                d.appendChild(sep);
+
+                                var ol = document.createElement('ol');
+                                ol.className = 'snipe-ai-sources-list';
+                                sources.forEach(function(s) {
+                                    var li = document.createElement('li');
+                                    li.textContent = s || 'unknown';
+                                    ol.appendChild(li);
+                                });
+                                d.appendChild(ol);
+                            } else if (links && links.length) {
                                 var wrap = document.createElement('div');
                                 wrap.className = 'snipe-ai-chat-links';
                                 for (var j = 0; j < links.length; j++) {
@@ -1539,8 +1620,9 @@
                                     a.rel = 'noopener noreferrer';
                                     wrap.appendChild(a);
                                 }
-                                if (wrap.childNodes.length) log.appendChild(wrap);
+                                if (wrap.childNodes.length) d.appendChild(wrap);
                             }
+
                             log.scrollTop = log.scrollHeight;
                             resolve();
                         }, 180);
@@ -1550,23 +1632,43 @@
         }
 
         // Backwards-compatible simple append
-        function appendAiReply(text, links) {
+        function appendAiReply(text, links, sources) {
             // append instantly (fallback)
             appendBubble(text, 'ai');
-            if (links && links.length) {
-                var wrap = document.createElement('div');
-                wrap.className = 'snipe-ai-chat-links';
-                for (var i = 0; i < links.length; i++) {
-                    var item = links[i];
-                    if (!item || !item.url) continue;
-                    var a = document.createElement('a');
-                    a.href = item.url;
-                    a.textContent = item.label || item.url;
-                    a.target = '_blank';
-                    a.rel = 'noopener noreferrer';
-                    wrap.appendChild(a);
+            try {
+                var d = log ? log.lastElementChild : null;
+                if (d && d.classList && d.classList.contains('snipe-ai-chat-bubble')) {
+                    if (sources && sources.length) {
+                        var sep = document.createElement('div');
+                        sep.className = 'snipe-ai-sources-sep';
+                        d.appendChild(sep);
+
+                        var ol = document.createElement('ol');
+                        ol.className = 'snipe-ai-sources-list';
+                        sources.forEach(function(s) {
+                            var li = document.createElement('li');
+                            li.textContent = s || 'unknown';
+                            ol.appendChild(li);
+                        });
+                        d.appendChild(ol);
+                    } else if (links && links.length) {
+                        var wrap = document.createElement('div');
+                        wrap.className = 'snipe-ai-chat-links';
+                        for (var i = 0; i < links.length; i++) {
+                            var item = links[i];
+                            if (!item || !item.url) continue;
+                            var a = document.createElement('a');
+                            a.href = item.url;
+                            a.textContent = item.label || item.url;
+                            a.target = '_blank';
+                            a.rel = 'noopener noreferrer';
+                            wrap.appendChild(a);
+                        }
+                        if (wrap.childNodes.length) d.appendChild(wrap);
+                    }
                 }
-                if (wrap.childNodes.length) log.appendChild(wrap);
+            } catch (e) {
+                // ignore non-fatal errors
             }
             log.scrollTop = log.scrollHeight;
         }
@@ -1660,94 +1762,120 @@
                 .then(function(x) {
                     if (x.ok && x.j.reply !== undefined) {
                         var replyText = x.j.reply || '(empty)';
+
+                        // Strip any server-appended "Source:" or "Sources:" block to avoid duplicate source listings.
+                        try {
+                            if (typeof replyText === 'string') {
+                                replyText = replyText.replace(/[\r\n]+\s*Source[s]?:[\s\S]*$/i, '')
+                                    .trim();
+                                if (!replyText) replyText = '(empty)';
+                            }
+                        } catch (e) {
+                            // ignore and use original replyText
+                        }
+
                         // remove thinking indicator
                         removeThinkingBubble(thinking);
 
                         // type AI reply, then store it and reconcile server state
-                        typeAndAppendAiReply(replyText, x.j.links || []).then(function() {
-                            try {
-                                var serverConvId = x.j.conversation_id || null;
+                        typeAndAppendAiReply(replyText, x.j.links || [], x.j.sources || []).then(
+                            function() {
+                                try {
+                                    var serverConvId = x.j.conversation_id || null;
 
-                                // If server returned a conversation id for a newly-created convo, move local store
-                                if (serverConvId) {
-                                    // If current convo was a temporary new-* id, migrate it
-                                    if (currentConversationId && String(currentConversationId)
-                                        .startsWith('new-')) {
-                                        var tempKey = currentConversationId;
-                                        var tempData = messagesStore[tempKey] || {
-                                            messages: []
-                                        };
-                                        // remove temp
-                                        delete messagesStore[tempKey];
-                                        messagesStore[serverConvId] = tempData;
-                                        messagesStore[serverConvId].id = serverConvId;
-                                        currentConversationId = serverConvId;
-                                    } else if (!currentConversationId) {
-                                        currentConversationId = serverConvId;
-                                    }
+                                    // If server returned a conversation id for a newly-created convo, move local store
+                                    if (serverConvId) {
+                                        // If current convo was a temporary new-* id, migrate it
+                                        if (currentConversationId && String(currentConversationId)
+                                            .startsWith('new-')) {
+                                            var tempKey = currentConversationId;
+                                            var tempData = messagesStore[tempKey] || {
+                                                messages: []
+                                            };
+                                            // remove temp
+                                            delete messagesStore[tempKey];
+                                            messagesStore[serverConvId] = tempData;
+                                            messagesStore[serverConvId].id = serverConvId;
+                                            currentConversationId = serverConvId;
+                                        } else if (!currentConversationId) {
+                                            currentConversationId = serverConvId;
+                                        }
 
-                                    // If server returned full messages list, use it to replace local history
-                                    if (Array.isArray(x.j.messages)) {
-                                        messagesStore[currentConversationId].messages = x.j
-                                            .messages.map(function(m) {
-                                                return {
-                                                    from: (m.role === 'user' ? 'user' :
-                                                        'ai'),
-                                                    text: m.content,
-                                                    created_at: m.created_at
-                                                };
+                                        // If server returned full messages list, use it to replace local history
+                                        if (Array.isArray(x.j.messages)) {
+                                            messagesStore[currentConversationId].messages = x.j
+                                                .messages.map(function(m) {
+                                                    var content = m.content || '';
+                                                    try {
+                                                        content = String(content).replace(
+                                                            /[\r\n]+\s*Source[s]?:[\s\S]*$/i,
+                                                            '').trim();
+                                                    } catch (e) {}
+                                                    return {
+                                                        from: (m.role === 'user' ? 'user' :
+                                                            'ai'),
+                                                        text: content,
+                                                        meta: m.meta || null,
+                                                        created_at: m.created_at
+                                                    };
+                                                });
+                                            // update meta info
+                                            messagesStore[currentConversationId].updated_at = (x.j
+                                                .messages.length ? (x.j.messages[x.j.messages
+                                                        .length - 1].created_at || new Date()
+                                                    .toISOString()) : new Date().toISOString());
+                                            messagesStore[currentConversationId].last_message = (x.j
+                                                .messages.length ? x.j.messages[x.j.messages
+                                                    .length - 1] : null);
+                                        } else {
+                                            // append just the AI reply
+                                            messagesStore[currentConversationId].messages.push({
+                                                from: 'ai',
+                                                text: replyText,
+                                                meta: {
+                                                    sources: x.j.sources || []
+                                                },
+                                                created_at: new Date().toISOString()
                                             });
-                                        // update meta info
-                                        messagesStore[currentConversationId].updated_at = (x.j
-                                            .messages.length ? (x.j.messages[x.j.messages
-                                                    .length - 1].created_at || new Date()
-                                                .toISOString()) : new Date().toISOString());
-                                        messagesStore[currentConversationId].last_message = (x.j
-                                            .messages.length ? x.j.messages[x.j.messages
-                                                .length - 1] : null);
+                                            messagesStore[currentConversationId].updated_at =
+                                                new Date().toISOString();
+                                            messagesStore[currentConversationId].last_message = {
+                                                role: 'assistant',
+                                                content: replyText,
+                                                created_at: new Date().toISOString()
+                                            };
+                                        }
                                     } else {
-                                        // append just the AI reply
-                                        messagesStore[currentConversationId].messages.push({
-                                            from: 'ai',
-                                            text: replyText,
-                                            created_at: new Date().toISOString()
-                                        });
-                                        messagesStore[currentConversationId].updated_at =
-                                            new Date().toISOString();
-                                        messagesStore[currentConversationId].last_message = {
-                                            role: 'assistant',
-                                            content: replyText,
-                                            created_at: new Date().toISOString()
-                                        };
+                                        // No server id returned — append to current local conversation
+                                        if (currentConversationId && messagesStore[
+                                                currentConversationId]) {
+                                            messagesStore[currentConversationId].messages.push({
+                                                from: 'ai',
+                                                text: replyText,
+                                                meta: {
+                                                    sources: x.j.sources || []
+                                                },
+                                                created_at: new Date().toISOString()
+                                            });
+                                            messagesStore[currentConversationId].updated_at =
+                                                new Date().toISOString();
+                                            messagesStore[currentConversationId].last_message = {
+                                                role: 'assistant',
+                                                content: replyText,
+                                                created_at: new Date().toISOString()
+                                            };
+                                        }
                                     }
-                                } else {
-                                    // No server id returned — append to current local conversation
-                                    if (currentConversationId && messagesStore[
-                                            currentConversationId]) {
-                                        messagesStore[currentConversationId].messages.push({
-                                            from: 'ai',
-                                            text: replyText,
-                                            created_at: new Date().toISOString()
-                                        });
-                                        messagesStore[currentConversationId].updated_at =
-                                            new Date().toISOString();
-                                        messagesStore[currentConversationId].last_message = {
-                                            role: 'assistant',
-                                            content: replyText,
-                                            created_at: new Date().toISOString()
-                                        };
-                                    }
+
+                                    // Re-render conversation list so ordering/last message updates
+                                    renderMessagesList();
+                                } catch (e) {
+                                    // ignore reconciliation errors but ensure UI stays responsive
+                                    console.error(e);
                                 }
 
-                                // Re-render conversation list so ordering/last message updates
-                                renderMessagesList();
-                            } catch (e) {
-                                // ignore reconciliation errors but ensure UI stays responsive
-                                console.error(e);
-                            }
-
-                            sendBtn.disabled = false;
-                        });
+                                sendBtn.disabled = false;
+                            });
                     } else {
                         removeThinkingBubble(thinking);
                         var errLine = (x.j && (x.j.error || x.j.message)) ? (x.j.error || x.j.message) :

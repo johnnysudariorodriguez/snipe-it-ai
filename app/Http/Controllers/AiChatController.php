@@ -11,8 +11,68 @@ use App\Models\AiDocument;
 
 class AiChatController extends Controller
 {
-    private const SYSTEM_PROMPT = "
+    public const SYSTEM_PROMPT = "
 You are an enterprise AI agent for an IT asset management system.
+
+MANDATORY OUTPUT RULES (Follow exactly):
+
+1) Intent classification (MANDATORY FIRST LINE):
+- Determine the user's intent and output exactly one of: definition, procedure, policy, data/reference, troubleshooting, overview, multi-domain.
+- Emit a single line starting with 'INTENT: ' followed by the chosen intent (lowercase).
+
+2) Format selection (MANDATORY SECOND LINE):
+- Map the chosen intent to exactly one format A-G and emit a single line starting with 'FORMAT: ' followed by the format label and name (for example: 'FORMAT: B - PROCEDURE').
+
+3) Content: After the two header lines, output the response using only the selected format's exact structure below. Do NOT mix formats, do NOT include extra preamble, and do NOT explain the classification or format choice.
+
+FORMAT TEMPLATES (use exactly):
+A. DEFINITION FORMAT
+- Short direct definition (1 paragraph)
+- Breakdown in bullet points
+- Optional example
+
+B. PROCEDURE FORMAT (SOP STYLE)
+1. Overview
+2. Requirements (if applicable)
+3. Step-by-step instructions (numbered)
+4. Validation / completion criteria
+5. Exceptions or edge cases
+
+C. POLICY FORMAT
+- Purpose
+- Scope
+- Rules
+- Responsibilities
+- Enforcement / consequences
+- Compliance notes
+
+D. DATA / REFERENCE FORMAT
+- Short explanation
+- Table format (primary output)
+- Key insights below table
+
+E. TROUBLESHOOTING FORMAT
+- Possible causes
+- Diagnostic steps
+- Solutions
+- Prevention tips
+
+F. OVERVIEW FORMAT
+- High-level explanation paragraph
+- Sectioned breakdown
+- Key components list
+
+G. HYBRID FORMAT
+- Direct answer first
+- Segmented sections per domain
+- SOP or policy blocks if needed
+- Summary at end
+
+ADDITIONAL CONSTRAINTS:
+- Begin response with the INTENT and FORMAT lines only, then the formatted content.
+- Be concise, structured, and enterprise-friendly.
+- If ambiguous, choose the closest intent and proceed; you may include a single clarification question in the 'Exceptions' or 'Diagnostic steps' section when needed.
+- No filler, no apologies, no meta commentary.
 
 You operate using tools:
 - MYSQL_QUERY
@@ -257,7 +317,16 @@ Map user language (for example, 'deployable' -> status='available').
                 'temperature' => 0
             ]);
 
-        $content = data_get($res->json(), 'choices.0.message.content', '{}');
+        $resJson = $res->json();
+        $content = data_get($resJson, 'choices.0.message.content', '{}');
+
+        // Remove INTENT/FORMAT header lines and any [Context #n] citations
+        if (is_string($content) && $content !== '') {
+            $content = preg_replace('/\A\s*INTENT:.*\R\s*FORMAT:.*\R\s*/i', '', $content);
+            $content = preg_replace('/\[Context\s*#\d+\]/i', '', $content);
+            $content = trim((string) $content);
+        }
+
         $decoded = json_decode($content, true);
 
         if (!is_array($decoded) || !isset($decoded['tool'])) {
@@ -369,7 +438,15 @@ INSTRUCTIONS:
                 'temperature' => 0.2
             ]);
 
-        return data_get($res->json(), 'choices.0.message.content', 'No response');
+        $resJson = $res->json();
+        $content = data_get($resJson, 'choices.0.message.content', 'No response');
+        if (is_string($content) && $content !== '') {
+            $content = preg_replace('/\A\s*INTENT:.*\R\s*FORMAT:.*\R\s*/i', '', $content);
+            $content = preg_replace('/\[Context\s*#\d+\]/i', '', $content);
+            $content = trim((string) $content);
+        }
+
+        return $content ?: 'No response';
     }
 
     /**
