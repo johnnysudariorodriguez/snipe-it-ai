@@ -27,13 +27,14 @@ class RagService
     {
         $top_k = $opts['top_k'] ?? 5;
 
-        // Step 1: quick heuristic to decide if external data makes sense
-        if (! $this->needsKb($question, $history)) {
+        // Initial retrieval with original query (KB-first: always attempt retrieval)
+        $initial = $this->queryPython($question, min(5, $top_k));
+
+        // If retrieval returned nothing and heuristic indicates KB isn't needed,
+        // skip using KB to avoid unnecessary LLM calls.
+        if (empty($initial) && ! $this->needsKb($question, $history)) {
             return ['use_kb' => false];
         }
-
-        // Step 2: initial retrieval with original query
-        $initial = $this->queryPython($question, min(5, $top_k));
 
         // Step 3: relevance grading (self-critic)
         $graded = $this->gradeResults($question, $initial);
@@ -65,8 +66,10 @@ class RagService
             return array_merge(['use_kb' => true], $replyPacket, ['kb_results' => $graded2['relevant']]);
         }
 
-        // No KB answer found after self-correction
-        // Build closest matches list (top N) with simple reasons derived from vector distance
+        // No high-confidence KB answer found after self-correction.
+        // If there are candidate chunks, surface them as low-confidence KB results
+        // so the controller can conservatively synthesize an answer instead of
+        // returning an immediate NO-MATCH.
         $candidates = $aggResults ?: $initial;
         $closest = [];
 
@@ -93,6 +96,18 @@ class RagService
 
                 $count++;
             }
+
+            // Also return the top candidate chunks as low-confidence KB results so
+            // the caller (ChatController) will use them to synthesize a conservative answer.
+            $kb_candidates = array_slice($candidates, 0, 6);
+
+            return [
+                'use_kb' => true,
+                'kb_results' => $kb_candidates,
+                'low_confidence' => true,
+                'closest_matches' => $closest,
+                'searched' => 'knowledge base',
+            ];
         }
 
         return [
@@ -191,7 +206,7 @@ class RagService
             $distance = isset($c['distance']) ? (float) $c['distance'] : null;
 
             // fast path: very close vectors
-            if ($distance !== null && $distance < 0.12) {
+            if ($distance !== null && $distance < 1.5) {
                 $c['eval'] = ['relevant' => true, 'confidence' => 0.95, 'reason' => 'low vector distance'];
                 $relevant[] = $c;
                 continue;

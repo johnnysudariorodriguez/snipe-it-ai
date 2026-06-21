@@ -106,6 +106,55 @@ class ChatController extends Controller
                 return ['role' => $m->role, 'content' => $m->content, 'meta' => $m->meta];
             })->toArray();
 
+            // Short-circuit conversational/greeting identity queries to avoid returning
+            // KB excerpts. For simple greetings (hi/hello/hey) and identity questions
+            // (who are you / what's your name), call the OpenAI chat directly and
+            // do not use the knowledge base.
+            $greetingRe = '/^\s*(hi|hello|hey|hiya|yo|howdy)\b[!.,\s]*$/i';
+            $identityRe = '/^\s*(who are (you|u)|what(?:\'s| is) your name|what is your name)\b[?!.]?\s*$/i';
+
+            if (preg_match($greetingRe, $message) || preg_match($identityRe, $message)) {
+                $system = "You are a friendly assistant. Answer briefly and conversationally. Do not include or cite content from the organization's knowledge base for greetings or identity questions.";
+
+                $resp = $openai->chat([
+                    ['role' => 'system', 'content' => $system],
+                    ['role' => 'user', 'content' => $message]
+                ], ['temperature' => 0.6, 'max_tokens' => 160]);
+
+                $aiReply = trim((string) data_get($resp, 'reply', ''));
+                if ($aiReply === '') {
+                    $aiReply = "Hello — how can I help you today?";
+                }
+
+                $assistantMsg = ChatMessage::create([
+                    'conversation_id' => $conversation->id,
+                    'role' => 'assistant',
+                    'content' => $aiReply,
+                    'meta' => [
+                        'kb' => false,
+                        'conversational' => true,
+                    ],
+                ]);
+
+                $conversation->touch();
+
+                $messagesOut = ChatMessage::where('conversation_id', $conversation->id)
+                    ->orderBy('created_at', 'asc')
+                    ->limit(50)
+                    ->get()
+                    ->map(function ($m) {
+                        return ['id' => $m->id, 'role' => $m->role, 'content' => $m->content, 'meta' => $m->meta, 'created_at' => $m->created_at];
+                    });
+
+                return response()->json([
+                    'conversation_id' => $conversation->id,
+                    'reply' => $aiReply,
+                    'messages' => $messagesOut,
+                    'kb' => false,
+                    'conversational' => true,
+                ]);
+            }
+
             $ragResp = $rag->answer($message, $historyArr, ['top_k' => 5]);
 
             // If KB produced any results, ALWAYS use them to produce the answer.
@@ -207,12 +256,8 @@ class ChatController extends Controller
             // No KB answer — build a more natural (non-static) NO-MATCH response
             $closest = $ragResp['closest_matches'] ?? [];
 
-            $intros = [
-                "I couldn't find a matching result.",
-                "I couldn't locate an exact match in the knowledge base.",
-                "No exact match was found in the knowledge base.",
-                "I didn't find a direct match in the knowledge base.",
-            ];
+            // Standard NO-MATCH intro per policy
+            $intro = "I couldn't find a matching result.";
 
             $explanations = [
                 "This may be because the item isn't indexed yet, the index is incomplete, or the query was very specific.",
@@ -227,12 +272,10 @@ class ChatController extends Controller
             ];
 
             try {
-                $intro = $intros[random_int(0, count($intros) - 1)];
                 $explanation = $explanations[random_int(0, count($explanations) - 1)];
                 $next = $nextSteps[random_int(0, count($nextSteps) - 1)];
             } catch (\Throwable $e) {
                 // fallback deterministic choice
-                $intro = $intros[0];
                 $explanation = $explanations[0];
                 $next = $nextSteps[0];
             }
@@ -244,13 +287,22 @@ class ChatController extends Controller
             $parts[] = "Clarification:\nThis does NOT mean the item does not exist; it only means it was not present in the retrieved knowledge base.";
 
             if (! empty($closest)) {
-                $cm = "Closest Matches:\n";
+                // Build closest matches list with distances to explain weak matches
+                $cm = "Closest Matches (distance shown):\n";
                 foreach ($closest as $i => $c) {
                     $idx = $i + 1;
                     $src = $c['source'] ?? 'unknown';
-                    $cm .= "- Match {$idx}: Source: {$src}\n";
+                    $distance = isset($c['distance']) ? round((float)$c['distance'], 4) : null;
+                    $distText = $distance !== null ? " (d={$distance})" : "";
+                    $cm .= "- Match {$idx}: Source: {$src}{$distText}\n";
                 }
+
+                // Add a short reasoning block summarizing why no confident answer was produced
+                $synthAttempted = ! empty($ragResp['low_confidence']) ? 'Yes (low-confidence synthesis attempted)' : 'No';
+                $reason = "Reasoning:\n- Retrieval returned " . count($closest) . " candidate(s); none passed the relevance threshold.\n- Low-confidence synthesis attempted: {$synthAttempted}.\n- Distances indicate low semantic similarity for the query.\n";
+
                 $parts[] = $cm;
+                $parts[] = $reason;
             } else {
                 $parts[] = "Closest Matches: none found.";
             }
@@ -284,6 +336,11 @@ class ChatController extends Controller
                 'messages' => $messagesOut,
                 'kb' => false,
                 'closest_matches' => $closest,
+                'rag_debug' => [
+                    'closest_matches' => $closest,
+                    'synth_attempted' => $ragResp['low_confidence'] ?? false,
+                    'searched' => $ragResp['searched'] ?? 'knowledge base'
+                ],
             ]);
 
         } catch (\Throwable $e) {
