@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Storage;
 use App\Models\Asset;
 use App\Models\AiChatMessage;
 use App\Models\AiDocument;
+use App\Jobs\ProcessAiDocument;
 
 class AiChatController extends Controller
 {
@@ -210,29 +212,106 @@ RULES:
     }
 
     /**
+     * Reconcile files on disk with DB records: create AiDocument rows for any files
+     * present under the storage disk but missing in the database, and dispatch
+     * processing jobs for them. Admin-only.
+     */
+    public function reconcile(Request $request)
+    {
+        if (! $request->user() || (! $request->user()->isAdmin() && ! $request->user()->isSuperUser())) {
+            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+        }
+
+        $disk = config('filesystems.default', env('PRIVATE_FILESYSTEM_DISK', 'local'));
+        try {
+            $files = Storage::disk($disk)->files('ai_docs');
+        } catch (\Throwable $e) {
+            return response()->json(['status' => 'error', 'message' => 'Failed to list storage: ' . $e->getMessage()], 500);
+        }
+
+        $created = [];
+        $skipped = [];
+
+        foreach ($files as $path) {
+            $filename = basename($path);
+            if (AiDocument::where('filename', $filename)->exists()) {
+                $skipped[] = $filename;
+                continue;
+            }
+
+            try {
+                $size = null;
+                try { $size = Storage::disk($disk)->size($path); } catch (\Throwable $ex) { }
+
+                $doc = AiDocument::create([
+                    'original_name' => $filename,
+                    'filename' => $filename,
+                    'path' => $path,
+                    'size' => $size,
+                    'status' => 'Queued',
+                    'created_by' => $request->user()->id ?? null,
+                ]);
+
+                ProcessAiDocument::dispatch($doc->id);
+                $created[] = $filename;
+            } catch (\Throwable $e) {
+                // record and continue
+                $skipped[] = $filename;
+            }
+        }
+
+        return response()->json(['status' => 'ok', 'created' => $created, 'skipped' => $skipped]);
+    }
+
+    /**
      * Delete a document record and remove the stored file.
      */
-    public function destroy($id)
+    public function destroy(Request $request, $id)
     {
         $doc = AiDocument::find($id);
         if (! $doc) {
             return response()->json(['status' => 'error', 'message' => 'Not found'], 404);
         }
+        // Only admins / superusers may delete uploaded docs
+        if (! $request->user() || (! $request->user()->isAdmin() && ! $request->user()->isSuperUser())) {
+            return response()->json(['status' => 'error', 'message' => 'Unauthorized'], 403);
+        }
+
+        // First, attempt to remove embeddings from the Python/Chroma service
+        $pythonUrl = rtrim(config('app.python_api_url', env('PYTHON_API_URL', 'http://127.0.0.1:8001')), '/') . '/delete-doc';
+        $payload = [];
+        if (! empty($doc->external_id)) {
+            $payload['file_id'] = $doc->external_id;
+        } else {
+            $payload['file_name'] = $doc->original_name ?? $doc->filename;
+        }
+
+        try {
+            $res = Http::timeout(30)->post($pythonUrl, $payload);
+            if (! $res->successful()) {
+                return response()->json(['status' => 'error', 'message' => 'Failed to delete from vector DB', 'detail' => $res->body()], 500);
+            }
+        } catch (\Throwable $e) {
+            return response()->json(['status' => 'error', 'message' => 'Failed to contact vector service', 'detail' => $e->getMessage()], 500);
+        }
 
         // attempt to delete file using configured filesystem
         try {
             $disk = config('filesystems.default', env('PRIVATE_FILESYSTEM_DISK', 'local'));
-            if ($doc->path && \Illuminate\Support\Facades\Storage::disk($disk)->exists($doc->path)) {
-                \Illuminate\Support\Facades\Storage::disk($disk)->delete($doc->path);
+            if ($doc->path && Storage::disk($disk)->exists($doc->path)) {
+                Storage::disk($disk)->delete($doc->path);
             }
         } catch (\Throwable $e) {
-            // non-fatal: continue to delete DB record but report partial failure
-            $doc->error_message = 'Failed to delete file: ' . $e->getMessage();
-            $doc->save();
-            return response()->json(['status' => 'error', 'message' => 'Failed to delete file'], 500);
+            // non-fatal: report error
+            return response()->json(['status' => 'error', 'message' => 'Deleted from vector DB but failed to delete file: ' . $e->getMessage()], 500);
         }
 
-        $doc->delete();
+        // remove DB record
+        try {
+            $doc->delete();
+        } catch (\Throwable $e) {
+            return response()->json(['status' => 'error', 'message' => 'Failed to delete DB record: ' . $e->getMessage()], 500);
+        }
 
         return response()->json(['status' => 'ok', 'message' => 'Deleted']);
     }

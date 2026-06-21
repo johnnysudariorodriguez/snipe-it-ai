@@ -215,3 +215,67 @@ def health():
         "openai": OPENAI_API_KEY is not None,
         "chroma": True
     }
+
+
+class DeleteDocRequest(BaseModel):
+    file_id: Optional[str] = None
+    file_name: Optional[str] = None
+
+
+@app.post("/delete-doc")
+async def delete_doc(req: DeleteDocRequest):
+    if not req.file_id and not req.file_name:
+        raise HTTPException(status_code=400, detail="file_id or file_name required")
+
+    deleted_count = 0
+    # Try to delete by file_id metadata first
+    try:
+        if req.file_id:
+            # try direct delete by metadata filter
+            try:
+                collection.delete(where={"file_id": req.file_id})
+                deleted_count = 1
+            except Exception:
+                # fallback: fetch matching ids and delete them
+                try:
+                    res = collection.get(where={"file_id": req.file_id}, include=["ids"])
+                    ids = res.get("ids", [])
+                    if ids and len(ids) and isinstance(ids[0], list):
+                        ids_list = ids[0]
+                    else:
+                        ids_list = ids
+                    if ids_list:
+                        collection.delete(ids=ids_list)
+                        deleted_count = len(ids_list)
+                except Exception:
+                    pass
+
+        # Also attempt deletion by original file name if provided
+        if req.file_name:
+            try:
+                collection.delete(where={"source": req.file_name})
+                deleted_count = deleted_count or 1
+            except Exception:
+                try:
+                    res = collection.get(where={"source": req.file_name}, include=["ids"])
+                    ids = res.get("ids", [])
+                    if ids and len(ids) and isinstance(ids[0], list):
+                        ids_list = ids[0]
+                    else:
+                        ids_list = ids
+                    if ids_list:
+                        collection.delete(ids=ids_list)
+                        deleted_count = deleted_count or len(ids_list)
+                except Exception:
+                    pass
+
+        try:
+            if hasattr(chroma_client, 'persist'):
+                chroma_client.persist()
+        except Exception:
+            pass
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+    return {"status": "ok", "deleted": deleted_count}

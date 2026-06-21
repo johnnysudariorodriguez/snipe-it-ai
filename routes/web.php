@@ -54,6 +54,7 @@ Route::group(['middleware' => 'auth'], function () {
     Route::get('api/v1/ai/doc/{id}/status', [AiChatController::class, 'documentStatus'])->name('api.ai.doc.status');
     Route::post('api/v1/ai/chat', [AiChatController::class, 'chat'])->name('api.ai.chat');
     Route::delete('api/v1/ai/doc/{id}', [AiChatController::class, 'destroy'])->name('api.ai.doc.delete');
+    Route::post('api/v1/ai/reconcile', [AiChatController::class, 'reconcile'])->name('api.ai.reconcile');
 
     // Backwards-compatible (legacy) routes without the /v1 prefix used by
     // some frontend code paths. These mirror the /api/v1/ai/* routes and
