@@ -28,7 +28,9 @@ if OPENAI_API_KEY:
     OPENAI_API_KEY = OPENAI_API_KEY.strip().strip('"').strip("'")
     OPENAI_API_KEY = OPENAI_API_KEY.lstrip('= ')
 
-PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+CHROMA_HOST = os.getenv("CHROMA_HOST", "20.195.43.211")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
+CHROMA_USE_SSL = os.getenv("CHROMA_USE_SSL", "false").lower() in ("1", "true", "yes")
 
 
 # =========================
@@ -41,15 +43,21 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # =========================
-# CHROMA DB
+# CHROMA DB (Remote HTTP)
 # =========================
-# ensure persist directory exists
-os.makedirs(PERSIST_DIR, exist_ok=True)
+print(f"Connecting to ChromaDB at {CHROMA_HOST}:{CHROMA_PORT}")
 try:
-    chroma_client = chromadb.PersistentClient(path=PERSIST_DIR)
+    chroma_client = chromadb.HttpClient(
+        host=CHROMA_HOST,
+        port=CHROMA_PORT,
+        ssl=CHROMA_USE_SSL
+    )
+    # test connection by accessing the collection
     collection = chroma_client.get_or_create_collection("documents")
 except Exception as e:
-    raise RuntimeError(f"ChromaDB init failed: {e}")
+    raise RuntimeError(
+        f"ChromaDB init failed: {e}. Ensure CHROMA_HOST/CHROMA_PORT are correct and the Chroma server is reachable."
+    )
 
 
 # =========================
